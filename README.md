@@ -1,2 +1,2 @@
 # execution-platform
-Scalable execution environment for RP and Opportunity Fund models.
+Scalable execution infrastructure for running MISM models across cloud and HPC environments, supporting containerized, reproducible model execution and integration with the model-discovery service.
