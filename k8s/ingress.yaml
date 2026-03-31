@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mism-exec-ingress
+  namespace: mism-test
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mism-exec.apps.renci.org
+      secretName: mism-exec.apps.renci.org-tls
+  rules:
+    - host: mism-exec.apps.renci.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mism-exec
+                port:
+                  number: 8000

@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mism-exec
+  namespace: mism-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mism-exec-role
+  namespace: mism-test
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mism-exec-binding
+  namespace: mism-test
+subjects:
+  - kind: ServiceAccount
+    name: mism-exec
+    namespace: mism-test
+roleRef:
+  kind: Role
+  name: mism-exec-role
+  apiGroup: rbac.authorization.k8s.io

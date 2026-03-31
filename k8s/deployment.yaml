@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mism-exec
+  namespace: mism-test
+  labels:
+    app: mism-exec
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mism-exec
+  template:
+    metadata:
+      labels:
+        app: mism-exec
+    spec:
+      serviceAccountName: mism-exec
+      containers:
+        - name: mism-exec
+          image: helxplatform/mism-exec@sha256:ad44e621e00071214e634c8d5f232a10a3c5808fe45830f728ab9572f580a289
+          ports:
+            - containerPort: 8000
+          env:
+            - name: NAMESPACE
+              value: "mism-test"
+            - name: SERVICE_ACCOUNT
+              value: "default"
+            - name: AMBASSADOR_ENABLED
+              value: "false"
+            - name: STUB_COMPUTE
+              value: "false"
+            - name: POC_OUTPUT_PVC
+              value: "mism-exec-output"
+            - name: POC_OUTPUT_BASE_DIR
+              value: "/mism/poc/outputs"
+            - name: VIVARIUM_IMAGE
+              value: "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mism-exec
+  namespace: mism-test
+  labels:
+    app: mism-exec
+spec:
+  type: ClusterIP
+  selector:
+    app: mism-exec
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

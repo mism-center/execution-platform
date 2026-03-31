@@ -1,0 +1,46 @@
+---
+# MISM Execution Platform — Service manifest template
+# Includes Ambassador mapping annotation for routing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ system.full_name }}
+  labels:
+    name: {{ system.full_name }}
+    username: {{ system.username }}
+    executor: mism-exec
+    mism-guid: {{ system.identifier }}
+  ownerReferences:
+  - apiVersion: apps/v1
+    controller: true
+    kind: Deployment
+    name: {{ deployment_name }}
+    uid: {{ deployment_uid }}
+{% if system.ambassador_enabled %}
+  annotations:
+    getambassador.io/config: |
+      ---
+      apiVersion: ambassador/v1
+      kind: Mapping
+      name: {{ system.full_name }}-mapping
+      prefix: {{ system.ambassador_prefix }}
+      service: {{ system.full_name }}:{{ system.primary_port }}
+      rewrite: {{ system.ambassador_prefix }}
+      retry_policy:
+        retry_on: gateway-error
+        num_retries: 10
+      bypass_auth: true
+      timeout_ms: 300000
+      idle_timeout_ms: 500000
+      connect_timeout_ms: 500000
+      use_websocket: true
+{% endif %}
+spec:
+  type: ClusterIP
+  selector:
+    name: {{ system.full_name }}
+  ports:
+  - name: http
+    port: {{ system.primary_port }}
+    protocol: TCP
+    targetPort: {{ system.primary_port }}
