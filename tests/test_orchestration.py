@@ -18,31 +18,11 @@ class TestSystemSpec:
         system = SystemSpec(app_name="mism-run", containers=[], identifier="abc123")
         assert system.full_name == "mism-run-abc123"
 
-    def test_primary_port_from_container(self) -> None:
-        container = ContainerSpec(name="jupyter", image="jupyter:latest", ports=[8888])
-        system = SystemSpec(app_name="test", containers=[container])
-        assert system.primary_port == 8888
-
-    def test_primary_port_default(self) -> None:
-        container = ContainerSpec(name="worker", image="worker:latest")
-        system = SystemSpec(app_name="test", containers=[container])
-        assert system.primary_port == 8888
-
-    def test_ambassador_prefix(self) -> None:
-        system = SystemSpec(
-            app_name="vivarium",
-            containers=[],
-            identifier="abc123",
-            username="hpatel",
-        )
-        assert system.ambassador_prefix == "/private/vivarium/hpatel/abc123/"
-
 
 class TestContainerSpec:
     def test_defaults(self) -> None:
         c = ContainerSpec(name="test", image="test:latest")
         assert c.env == {}
-        assert c.ports == []
         assert c.volumes == []
 
     def test_with_volumes(self) -> None:
@@ -75,12 +55,13 @@ class TestStubCompute:
 
     def test_start_returns_start_result(self) -> None:
         stub = StubCompute()
-        container = ContainerSpec(name="test", image="test:latest", ports=[8080])
+        container = ContainerSpec(name="test", image="test:latest")
         system = SystemSpec(app_name="test", containers=[container], identifier="abc")
         result = stub.start(system)
         assert isinstance(result, StartResult)
         assert result.sid == "abc"
         assert result.name == "test-abc"
+        assert result.url is None
 
     def test_status_returns_system_status(self) -> None:
         stub = StubCompute()
@@ -92,6 +73,7 @@ class TestStubCompute:
         assert isinstance(status, SystemStatus)
         assert status.phase == PodPhase.RUNNING
         assert status.is_ready is True
+        assert status.url is None
 
     def test_status_not_found(self) -> None:
         stub = StubCompute()

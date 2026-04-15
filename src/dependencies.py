@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from core.settings import Settings, get_settings
 from orchestration.compute import Compute
+from services.appstore_client import AppstoreClient
 from services.dal_service import DALService, create_registry
 from services.run_service import RunService
 from services.vivarium_service import VivariumService
@@ -26,8 +27,14 @@ def _create_compute(settings: Settings | None = None) -> Compute:
 @lru_cache
 def _create_dal(settings: Settings | None = None) -> DALService:
     settings = settings or get_settings()
-    registry = create_registry(settings)
-    return DALService(registry)
+    registry_or_factory = create_registry(settings)
+    return DALService(registry_or_factory)
+
+
+@lru_cache
+def _create_appstore(settings: Settings | None = None) -> AppstoreClient:
+    settings = settings or get_settings()
+    return AppstoreClient(settings)
 
 
 def get_compute() -> Compute:
@@ -41,7 +48,12 @@ def get_dal() -> DALService:
 @lru_cache
 def get_run_service() -> RunService:
     settings = get_settings()
-    return RunService(dal=get_dal(), compute=get_compute(), settings=settings)
+    return RunService(
+        dal=get_dal(),
+        compute=get_compute(),
+        settings=settings,
+        appstore=_create_appstore(),
+    )
 
 
 @lru_cache

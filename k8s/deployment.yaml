@@ -16,26 +16,38 @@ spec:
         app: mism-exec
     spec:
       serviceAccountName: mism-exec
+      imagePullSecrets:
+        - name: image-pull-secret
       containers:
         - name: mism-exec
-          image: helxplatform/mism-exec@sha256:ad44e621e00071214e634c8d5f232a10a3c5808fe45830f728ab9572f580a289
+          image: helxplatform/mism-exec:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:
             - name: NAMESPACE
               value: "mism-test"
             - name: SERVICE_ACCOUNT
-              value: "default"
-            - name: AMBASSADOR_ENABLED
-              value: "false"
+              value: "mism-exec"
             - name: STUB_COMPUTE
               value: "false"
+            - name: IRODS_PVC_NAME
+              value: "irods-pvc"
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: model-discovery-secrets
+                  key: databasePassword
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://mism:$(DATABASE_PASSWORD)@metadata-store:5432/mism"
             - name: POC_OUTPUT_PVC
               value: "mism-exec-output"
             - name: POC_OUTPUT_BASE_DIR
               value: "/mism/poc/outputs"
             - name: VIVARIUM_IMAGE
               value: "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"
+            - name: GPU_RESOURCE_NAME
+              value: "nvidia.com/gpu"
           resources:
             requests:
               cpu: "250m"

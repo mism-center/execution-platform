@@ -57,6 +57,27 @@ async def get_run(
     return result
 
 
+@router.post("/{run_id}/interactive", status_code=201)
+async def create_interactive(
+    run_id: str,
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> dict:
+    """Launch an interactive session for a Run."""
+    try:
+        result = service.create_interactive(run_id)
+    except ValueError as e:
+        raise ValidationError(detail=str(e)) from e
+    except RuntimeError as e:
+        raise OrchestrationError(detail=str(e)) from e
+
+    return {
+        "run_id": result.run_id,
+        "sid": result.sid,
+        "url": result.url,
+        "status": result.status.value,
+    }
+
+
 @router.delete("/{run_id}", status_code=204)
 async def delete_run(
     run_id: str,

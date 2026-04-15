@@ -165,7 +165,6 @@ class VivariumService:
         container = ContainerSpec(
             name="vivarium-jupyter",
             image=self._settings.vivarium_image,
-            ports=[8888],
             env={
                 "JUPYTER_TOKEN": jupyter_token,
                 "JUPYTER_ENABLE_LAB": "yes",
@@ -184,7 +183,6 @@ class VivariumService:
             containers=[container],
             namespace=self._settings.namespace,
             service_account=self._settings.service_account,
-            ambassador_enabled=True,
             security_context={"run_as_user": "1000", "run_as_group": "100"},
         )
 
@@ -227,7 +225,6 @@ class VivariumService:
             containers=[container],
             namespace=self._settings.namespace,
             service_account=self._settings.service_account,
-            ambassador_enabled=False,
             security_context={"run_as_user": "1000", "run_as_group": "100"},
         )
 

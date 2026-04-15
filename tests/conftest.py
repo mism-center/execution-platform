@@ -63,7 +63,7 @@ def client(
     return TestClient(app)
 
 
-def create_test_run(dal: DALService) -> str:
+def create_test_run(dal: DALService, registry: InMemoryRegistry | None = None) -> str:
     """Helper: register a model + input dataset + create a Run, return run_id."""
     model = dal.register_model(
         name="test-model",
@@ -71,8 +71,9 @@ def create_test_run(dal: DALService) -> str:
         execution_ref="docker.io/org/model:v1",
         metadata={"resource_requirements": {"cpus": "2", "memory": "4Gi"}},
     )
+    reg = registry or dal._in_memory
     input_ds = register_dataset(
-        dal._registry,
+        reg,
         name="test-dataset",
         location_uri="/mism/datasets/cohort-a/data.csv",
     )

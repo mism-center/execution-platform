@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     # --- Kubernetes ---
     namespace: str = "hpatel"
     service_account: str = "default"
-    ambassador_enabled: bool = True
     stub_compute: bool = False  # True → use StubCompute instead of K8s
 
     # --- DAL / Registry ---
@@ -30,7 +29,12 @@ class Settings(BaseSettings):
 
     # --- iRODS / Storage ---
     irods_pvc_name: str = "irods-data"
-    output_base_dir: str = "/mism/outputs"
+
+    # --- Appstore (interactive sessions) ---
+    appstore_url: str = "http://helx-appstore:8000"
+    appstore_username: str = "admin"
+    appstore_password: str = "admin"
+    ambassador_url: str = "https://mism-apps.apps.renci.org"
 
     # --- Vivarium PoC ---
     vivarium_image: str = "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"

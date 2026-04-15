@@ -1,6 +1,6 @@
 ---
 # MISM Execution Platform — Pod manifest template
-# Adapted from Tycho pod.yaml, stripped to essentials.
+# Used as the pod template spec inside a K8s Job.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -12,6 +12,7 @@ metadata:
     executor: mism-exec
     mism-guid: {{ system.identifier }}
 spec:
+  restartPolicy: Never
   enableServiceLinks: false
 {% if system.service_account %}
   serviceAccountName: {{ system.service_account }}
@@ -49,17 +50,6 @@ spec:
 {% endfor %}
     - name: MISM_GUID
       value: "{{ system.identifier }}"
-{% if system.ambassador_enabled %}
-    - name: NB_PREFIX
-      value: "/private/{{ system.app_name }}/{{ system.username }}/{{ system.identifier }}"
-{% endif %}
-{% if container.ports %}
-    ports:
-{% for port in container.ports %}
-    - containerPort: {{ port }}
-      protocol: TCP
-{% endfor %}
-{% endif %}
 {% if container.limits.cpus or container.limits.memory or container.limits.gpus %}
     resources:
       limits:

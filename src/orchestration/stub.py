@@ -23,9 +23,8 @@ class StubCompute:
 
     def start(self, system: SystemSpec) -> StartResult:
         self._systems[system.identifier] = system
-        url = system.ambassador_prefix if system.ambassador_enabled else None
         logger.info(f"[stub] Started system: {system.full_name}")
-        return StartResult(name=system.full_name, sid=system.identifier, url=url)
+        return StartResult(name=system.full_name, sid=system.identifier, url=None)
 
     def status(self, sid: str) -> SystemStatus | None:
         system = self._systems.get(sid)
@@ -36,7 +35,7 @@ class StubCompute:
             name=system.full_name,
             phase=PodPhase.RUNNING,
             is_ready=True,
-            url=system.ambassador_prefix if system.ambassador_enabled else None,
+            url=None,
         )
 
     def delete(self, sid: str) -> None:
