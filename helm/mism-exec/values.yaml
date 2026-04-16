@@ -1,0 +1,92 @@
+replicaCount: 1
+
+image:
+  repository: helxplatform/mism-exec
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: image-pull-secret
+
+serviceAccount:
+  create: true
+  name: mism-exec
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  host: mism-exec.apps.renci.org
+  tls:
+    secretName: mism-exec.apps.renci.org-tls
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 30
+  readiness:
+    path: /healthz
+    initialDelaySeconds: 3
+    periodSeconds: 10
+
+# --- Application config ---
+config:
+  namespace: mism-test
+  serviceAccount: mism-exec
+  stubCompute: "false"
+  gpuResourceName: nvidia.com/gpu
+
+# --- Storage ---
+storage:
+  irodsPvcName: irods-pvc
+  # Mount the iRODS PVC read-only on the execution platform pod
+  # so it can list/serve output files from past runs.
+  mountIrodsPvc: true
+  irodsMountPath: /irods
+  pocOutputPvc: mism-exec-output
+  pocOutputBaseDir: /mism/poc/outputs
+
+# --- DAL / Postgres ---
+database:
+  host: metadata-store
+  port: 5432
+  name: mism
+  user: mism
+  existingSecret: model-discovery-secrets
+  secretKey: databasePassword
+
+# --- Vivarium PoC ---
+vivarium:
+  image: "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"
+
+# --- Appstore (interactive sessions) ---
+appstore:
+  url: http://helx-appstore:8000
+  username: admin
+  existingSecret: helx-appstore
+  secretKey: APPSTORE_DJANGO_PASSWORD
+  ambassadorUrl: https://mism-apps.apps.renci.org
+
+# --- Auth (not enforced yet — MISM-181) ---
+auth:
+  enabled: false
+  mode: oidc
+  oidcIssuerUrl: ""
+  oidcAudience: ""

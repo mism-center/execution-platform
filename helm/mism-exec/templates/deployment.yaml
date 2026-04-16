@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mism-exec.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mism-exec.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mism-exec.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "mism-exec.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mism-exec
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: NAMESPACE
+              value: {{ .Values.config.namespace | quote }}
+            - name: SERVICE_ACCOUNT
+              value: {{ .Values.config.serviceAccount | quote }}
+            - name: STUB_COMPUTE
+              value: {{ .Values.config.stubCompute | quote }}
+            - name: GPU_RESOURCE_NAME
+              value: {{ .Values.config.gpuResourceName | quote }}
+            - name: IRODS_PVC_NAME
+              value: {{ .Values.storage.irodsPvcName | quote }}
+            - name: IRODS_MOUNT_PATH
+              value: {{ .Values.storage.irodsMountPath | quote }}
+            - name: POC_OUTPUT_PVC
+              value: {{ .Values.storage.pocOutputPvc | quote }}
+            - name: POC_OUTPUT_BASE_DIR
+              value: {{ .Values.storage.pocOutputBaseDir | quote }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKey }}
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://{{ .Values.database.user }}:$(DATABASE_PASSWORD)@{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.name }}"
+            - name: VIVARIUM_IMAGE
+              value: {{ .Values.vivarium.image | quote }}
+            - name: APPSTORE_URL
+              value: {{ .Values.appstore.url | quote }}
+            - name: APPSTORE_USERNAME
+              value: {{ .Values.appstore.username | quote }}
+            - name: APPSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appstore.existingSecret }}
+                  key: {{ .Values.appstore.secretKey }}
+            - name: AMBASSADOR_URL
+              value: {{ .Values.appstore.ambassadorUrl | quote }}
+            - name: AUTH_ENABLED
+              value: {{ .Values.auth.enabled | quote }}
+            {{- if .Values.auth.enabled }}
+            - name: AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.auth.oidcIssuerUrl | quote }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.auth.oidcAudience | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.storage.mountIrodsPvc }}
+          volumeMounts:
+            - name: irods-data
+              mountPath: {{ .Values.storage.irodsMountPath }}
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+      {{- if .Values.storage.mountIrodsPvc }}
+      volumes:
+        - name: irods-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.irodsPvcName }}
+            readOnly: true
+      {{- end }}

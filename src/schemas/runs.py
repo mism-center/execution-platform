@@ -9,15 +9,24 @@ from schemas.enums import PodPhase
 
 
 class CreateRunRequest(BaseModel):
-    """POST /api/v1/runs — execute a pre-created Run from the DAL.
-
-    The Discovery Gateway creates the Run record (via prepare_run) in the
-    shared Postgres database, then sends the run_id here.  The execution
-    platform resolves the model, inputs, and resource requirements from
-    the DAL.
-    """
+    """POST /api/v1/runs — execute a pre-created Run from the DAL."""
 
     run_id: str = Field(..., description="ID of an existing Run record in the DAL")
+
+
+class OutputResource(BaseModel):
+    """An output dataset linked to a completed run."""
+
+    resource_id: str
+    location_uri: str
+
+
+class FileInfo(BaseModel):
+    """A single file in a run's output directory."""
+
+    name: str
+    size: int
+    modified_at: str
 
 
 class RunResponse(BaseModel):
@@ -26,10 +35,12 @@ class RunResponse(BaseModel):
     run_id: str
     sid: str
     status: RunStatus
+    mode: str | None = None  # "batch" or "interactive"
     phase: PodPhase | None = None
     is_ready: bool | None = None
-    url: str | None = None
+    url: str | None = None  # Ambassador URL for interactive sessions
     error: str | None = None
+    output_resources: list[OutputResource] = []
 
 
 class RunListResponse(BaseModel):

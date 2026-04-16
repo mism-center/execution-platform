@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.v1 import poc, runs
 from core.errors import register_error_handlers
@@ -43,6 +44,12 @@ def create_app() -> FastAPI:
     )
 
     register_error_handlers(app)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(runs.router, prefix="/api/v1")

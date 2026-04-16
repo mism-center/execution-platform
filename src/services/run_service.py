@@ -26,7 +26,7 @@ from orchestration.models import (
     VolumeMount,
 )
 from schemas.enums import PodPhase
-from schemas.runs import RunResponse
+from schemas.runs import OutputResource, RunResponse
 from services.appstore_client import AppstoreClient
 from services.dal_service import DEFAULT_RESOURCE_REQUIREMENTS, DALService
 
@@ -73,11 +73,19 @@ class RunService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _pack_notes(sid: str, output_resource_id: str, output_uri: str) -> str:
+    def _pack_notes(
+        sid: str,
+        output_resource_id: str,
+        output_uri: str,
+        mode: str,
+        url: str = "",
+    ) -> str:
         return json.dumps({
             "sid": sid,
             "output_resource_id": output_resource_id,
             "output_uri": output_uri,
+            "mode": mode,
+            "url": url,
         })
 
     @staticmethod
@@ -167,7 +175,9 @@ class RunService:
             raise RuntimeError(f"Failed to launch pod: {e}") from e
 
         # Persist sid + output info in notes
-        notes = self._pack_notes(result.sid, output_resource_id, output_uri)
+        notes = self._pack_notes(
+            result.sid, output_resource_id, output_uri, mode="batch"
+        )
         try:
             self._dal.mark_running(run_id, notes=notes)
         except Exception:
@@ -188,6 +198,10 @@ class RunService:
         """Launch an interactive session for a Run via the appstore."""
         if self._appstore is None:
             raise RuntimeError("Appstore client not configured")
+
+        import secrets
+
+        jupyter_token = secrets.token_urlsafe(32)
 
         run = self._dal.get_run(run_id)
         if run is None:
@@ -236,6 +250,7 @@ class RunService:
         env = {
             "MODEL_ID": model.id,
             "RUN_ID": run_id,
+            "JUPYTER_TOKEN": jupyter_token,
         }
 
         session = self._appstore.launch(
@@ -247,18 +262,21 @@ class RunService:
             pvc_mounts=pvc_mounts,
         )
 
+        # Build the user-facing URL via Ambassador ingress
+        path = session.url.split("/private/", 1)[-1] if "/private/" in session.url else ""
+        ambassador_base = self._settings.ambassador_url.rstrip("/")
+        base_url = f"{ambassador_base}/private/{path}" if path else session.url
+        url = f"{base_url}?token={jupyter_token}" if jupyter_token else base_url
+
         # Persist session info
-        notes = self._pack_notes(session.sid, output_resource_id, output_uri)
+        notes = self._pack_notes(
+            session.sid, output_resource_id, output_uri,
+            mode="interactive", url=url,
+        )
         try:
             self._dal.mark_running(run_id, notes=notes)
         except Exception:
             logger.warning(f"Non-blocking: failed to update run {run_id} to running")
-
-        # Build the user-facing URL via Ambassador ingress
-        # session.url has the internal path, replace host with ambassador
-        path = session.url.split("/private/", 1)[-1] if "/private/" in session.url else ""
-        ambassador_base = self._settings.ambassador_url.rstrip("/")
-        url = f"{ambassador_base}/private/{path}" if path else session.url
 
         return InteractiveResult(
             run_id=run_id,
@@ -280,36 +298,45 @@ class RunService:
         status = RunStatus(run.status.value)
         notes = self._unpack_notes(run.notes)
         sid = notes.get("sid")
+        mode = notes.get("mode")
         phase: PodPhase | None = None
         is_ready: bool | None = None
-        url: str | None = None
+        url: str | None = notes.get("url") or None
 
         if status in (RunStatus.REGISTERED, RunStatus.RUNNING) and sid:
-            status, phase, is_ready, url = self._sync_live_status(
+            status, phase, is_ready, _live_url = self._sync_live_status(
                 run_id, sid, status, notes
             )
+
+        output_resources = self._resolve_output_resources(run.output_resource_ids)
 
         return RunResponse(
             run_id=run_id,
             sid=sid or "",
             status=status,
+            mode=mode,
             phase=phase,
             is_ready=is_ready,
             url=url,
             error=run.error_message or None,
+            output_resources=output_resources,
         )
 
     def list_runs(self) -> list[RunResponse]:
-        """List all runs. Lightweight — no live K8s enrichment."""
+        """List all runs with mode and output info."""
         runs = self._dal.list_all_runs()
         results = []
         for run in runs:
             notes = self._unpack_notes(run.notes)
+            output_resources = self._resolve_output_resources(run.output_resource_ids)
             results.append(
                 RunResponse(
                     run_id=run.id,
                     sid=notes.get("sid", ""),
                     status=RunStatus(run.status.value),
+                    mode=notes.get("mode"),
+                    url=notes.get("url") or None,
+                    output_resources=output_resources,
                 )
             )
         return results
@@ -341,6 +368,18 @@ class RunService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_output_resources(self, resource_ids: list[str]) -> list[OutputResource]:
+        """Look up output Resources by ID and return their location_uri."""
+        results = []
+        for rid in resource_ids:
+            resource = self._dal.get_resource(rid)
+            if resource is not None:
+                results.append(OutputResource(
+                    resource_id=resource.id,
+                    location_uri=resource.location_uri,
+                ))
+        return results
 
     def _resolve_input_paths(self, input_resource_ids: list[str]) -> list[tuple[str, str]]:
         """Resolve input Resource IDs to (resource_id, location_uri) pairs."""

@@ -85,3 +85,5 @@ class TestDeleteRun:
     def test_delete_run_not_found(self, client: TestClient) -> None:
         resp = client.delete("/api/v1/runs/nonexistent")
         assert resp.status_code == 404
+
+

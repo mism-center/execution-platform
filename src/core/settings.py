@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     # --- iRODS / Storage ---
     irods_pvc_name: str = "irods-data"
+    # Where the iRODS PVC is mounted on the execution platform pod itself
+    # (used for listing / downloading run output files).
+    irods_mount_path: str = "/irods"
 
     # --- Appstore (interactive sessions) ---
     appstore_url: str = "http://helx-appstore:8000"
@@ -42,7 +45,7 @@ class Settings(BaseSettings):
     poc_output_base_dir: str = "/mism/poc/outputs"
     poc_notebook_path: str = "/home/jovyan/notebooks/01_vivarium_getting_started.ipynb"
 
-    # --- Auth (designed for, not enforced yet) ---
+    # --- Auth (not enforced yet — MISM-181) ---
     auth_enabled: bool = False
     auth_mode: Literal["jwt", "oidc"] = "oidc"
     oidc_issuer_url: str | None = None
