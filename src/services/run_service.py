@@ -3,29 +3,22 @@
 All business logic for creating, querying, and cancelling runs lives here.
 Endpoints are thin wrappers that delegate to this service.
 
-Supports two execution modes:
-- Batch: headless K8s Job via Compute backend
-- Interactive: Jupyter/UI session via Appstore
+All K8s orchestration is delegated to the appstore:
+- Batch: K8s Jobs via /api/v1/jobs/
+- Interactive: K8s Deployments via /api/v1/containers/
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import secrets
 import uuid
 from dataclasses import dataclass
 
 from mism_registry import Resource, ResourceType, RunStatus
 
 from core.settings import Settings
-from orchestration.compute import Compute
-from orchestration.models import (
-    ContainerSpec,
-    ResourceLimits,
-    SystemSpec,
-    VolumeMount,
-)
-from schemas.enums import PodPhase
 from schemas.runs import OutputResource, RunResponse
 from services.appstore_client import AppstoreClient
 from services.dal_service import DEFAULT_RESOURCE_REQUIREMENTS, DALService
@@ -59,14 +52,12 @@ class RunService:
     def __init__(
         self,
         dal: DALService,
-        compute: Compute,
+        appstore: AppstoreClient,
         settings: Settings,
-        appstore: AppstoreClient | None = None,
     ) -> None:
         self._dal = dal
-        self._compute = compute
-        self._settings = settings
         self._appstore = appstore
+        self._settings = settings
 
     # ------------------------------------------------------------------
     # Internal helpers for notes (JSON state stored on Run.notes)
@@ -106,24 +97,14 @@ class RunService:
     def _generate_output_resource(model_name: str, run_id: str) -> tuple[str, str]:
         """Pre-generate an output Resource ID and location_uri.
 
-        Convention: ``<resource-id>/v1/`` on the PVC.
+        Convention: ``<resource-id>/v1`` on the PVC.
         """
         resource_id = str(uuid.uuid4())
         location_uri = f"{resource_id}/v1"
         return resource_id, location_uri
 
-    def _register_output_resource(
-        self, resource_id: str, location_uri: str, model_name: str, run_id: str
-    ) -> Resource:
-        """Create the output Resource in the DAL."""
-        return self._dal.register_dataset(
-            resource_id=resource_id,
-            name=f"{model_name}-output-{run_id[:8]}",
-            location_uri=location_uri,
-        )
-
     # ------------------------------------------------------------------
-    # Batch execution
+    # Batch execution (via appstore /api/v1/jobs/)
     # ------------------------------------------------------------------
 
     def create_run(self, run_id: str) -> RunResult:
@@ -148,33 +129,39 @@ class RunService:
         cpus = resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"])
         memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
-        # Pre-generate output Resource identity
         output_resource_id, output_uri = self._generate_output_resource(
             model.name, run_id
         )
 
         sid = uuid.uuid4().hex
+        pvc = self._settings.irods_pvc_name
 
-        system = self._build_system_spec(
-            model_image=model.execution_ref,
-            model_name=model.name,
-            model_id=model.id,
-            model_metadata=model.metadata,
-            run_id=run_id,
-            sid=sid,
-            input_paths=input_paths,
-            output_uri=output_uri,
-            cpus=cpus,
-            memory=memory,
-        )
+        # Build PVC mounts
+        pvc_mounts = self._build_pvc_mounts(input_paths, output_uri, pvc)
+
+        env = {
+            "MODEL_ID": model.id,
+            "RUN_ID": run_id,
+            "INPUT_PATH": "/input",
+            "OUTPUT_PATH": "/output",
+        }
+        command = model.metadata.get("command")
 
         try:
-            result = self._compute.start(system)
+            result = self._appstore.launch_job(
+                name=f"mism-{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
+                identifier=sid,
+                image=model.execution_ref,
+                cpus=cpus,
+                memory=memory,
+                env=env,
+                command=command,
+                pvc_mounts=pvc_mounts,
+            )
         except Exception as e:
             self._safe_cancel(run_id)
-            raise RuntimeError(f"Failed to launch pod: {e}") from e
+            raise RuntimeError(f"Failed to launch job: {e}") from e
 
-        # Persist sid + output info in notes
         notes = self._pack_notes(
             result.sid, output_resource_id, output_uri, mode="batch"
         )
@@ -187,20 +174,15 @@ class RunService:
             run_id=run_id,
             sid=result.sid,
             status=RunStatus.RUNNING,
-            url=result.url,
+            url=None,
         )
 
     # ------------------------------------------------------------------
-    # Interactive session
+    # Interactive session (via appstore /api/v1/containers/)
     # ------------------------------------------------------------------
 
     def create_interactive(self, run_id: str) -> InteractiveResult:
         """Launch an interactive session for a Run via the appstore."""
-        if self._appstore is None:
-            raise RuntimeError("Appstore client not configured")
-
-        import secrets
-
         jupyter_token = secrets.token_urlsafe(32)
 
         run = self._dal.get_run(run_id)
@@ -223,29 +205,15 @@ class RunService:
         cpus = float(resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"]))
         memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
-        # Pre-generate output Resource identity
         output_resource_id, output_uri = self._generate_output_resource(
             model.name, run_id
         )
 
         pvc = self._settings.irods_pvc_name
-
-        # Build PVC mounts for appstore
-        pvc_mounts = []
-        for i, (_rid, uri) in enumerate(input_paths):
-            mount_path = f"/data/input/{i}" if len(input_paths) > 1 else "/data/input"
-            pvc_mounts.append({
-                "pvc": pvc,
-                "mount_path": mount_path,
-                "sub_path": uri.strip("/"),
-                "read_only": True,
-            })
-        pvc_mounts.append({
-            "pvc": pvc,
-            "mount_path": "/data/output",
-            "sub_path": output_uri,
-            "read_only": False,
-        })
+        pvc_mounts = self._build_pvc_mounts(
+            input_paths, output_uri, pvc,
+            input_prefix="/data/input", output_mount="/data/output",
+        )
 
         env = {
             "MODEL_ID": model.id,
@@ -268,7 +236,6 @@ class RunService:
         base_url = f"{ambassador_base}/private/{path}" if path else session.url
         url = f"{base_url}?token={jupyter_token}" if jupyter_token else base_url
 
-        # Persist session info
         notes = self._pack_notes(
             session.sid, output_resource_id, output_uri,
             mode="interactive", url=url,
@@ -290,7 +257,7 @@ class RunService:
     # ------------------------------------------------------------------
 
     def get_run(self, run_id: str) -> RunResponse | None:
-        """Get a run resource, enriched with live K8s status if active."""
+        """Get a run resource, enriched with live status if active."""
         run = self._dal.get_run(run_id)
         if run is None:
             return None
@@ -299,14 +266,14 @@ class RunService:
         notes = self._unpack_notes(run.notes)
         sid = notes.get("sid")
         mode = notes.get("mode")
-        phase: PodPhase | None = None
-        is_ready: bool | None = None
         url: str | None = notes.get("url") or None
 
-        if status in (RunStatus.REGISTERED, RunStatus.RUNNING) and sid:
-            status, phase, is_ready, _live_url = self._sync_live_status(
-                run_id, sid, status, notes
-            )
+        phase: str | None = None
+        is_ready: bool | None = None
+
+        if status in (RunStatus.REGISTERED, RunStatus.RUNNING) and sid and mode == "batch":
+            status, phase, is_ready = self._sync_batch_status(run_id, sid, status, notes)
+        # Interactive status comes from notes (url) — no live polling needed for MVP
 
         output_resources = self._resolve_output_resources(run.output_resource_ids)
 
@@ -349,6 +316,7 @@ class RunService:
 
         notes = self._unpack_notes(run.notes)
         sid = notes.get("sid")
+        mode = notes.get("mode")
         status = RunStatus(run.status.value)
 
         if status in (RunStatus.REGISTERED, RunStatus.RUNNING):
@@ -359,7 +327,10 @@ class RunService:
 
         if sid:
             try:
-                self._compute.delete(sid)
+                if mode == "interactive":
+                    self._appstore.delete_container(sid)
+                else:
+                    self._appstore.delete_job(sid)
             except Exception:
                 logger.warning(f"Failed to delete K8s resources for sid={sid}")
 
@@ -368,6 +339,32 @@ class RunService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _build_pvc_mounts(
+        self,
+        input_paths: list[tuple[str, str]],
+        output_uri: str,
+        pvc: str,
+        input_prefix: str = "/input",
+        output_mount: str = "/output",
+    ) -> list[dict]:
+        """Build PVC mount dicts for the appstore API."""
+        mounts = []
+        for i, (_rid, uri) in enumerate(input_paths):
+            mount_path = f"{input_prefix}/{i}" if len(input_paths) > 1 else input_prefix
+            mounts.append({
+                "pvc": pvc,
+                "mount_path": mount_path,
+                "sub_path": uri.strip("/"),
+                "read_only": True,
+            })
+        mounts.append({
+            "pvc": pvc,
+            "mount_path": output_mount,
+            "sub_path": output_uri.strip("/"),
+            "read_only": False,
+        })
+        return mounts
 
     def _resolve_output_resources(self, resource_ids: list[str]) -> list[OutputResource]:
         """Look up output Resources by ID and return their location_uri."""
@@ -393,113 +390,36 @@ class RunService:
             paths.append((rid, resource.location_uri))
         return paths
 
-    def _build_system_spec(
-        self,
-        *,
-        model_image: str,
-        model_name: str,
-        model_id: str,
-        model_metadata: dict,
-        run_id: str,
-        sid: str,
-        input_paths: list[tuple[str, str]],
-        output_uri: str,
-        cpus: str,
-        memory: str,
-    ) -> SystemSpec:
-        """Build a K8s SystemSpec from resolved DAL data."""
-        volumes = self._build_volumes(input_paths, output_uri)
-        env = {
-            "MODEL_ID": model_id,
-            "RUN_ID": run_id,
-            "INPUT_PATH": "/input",
-            "OUTPUT_PATH": "/output",
-        }
-        command = model_metadata.get("command")
-        container = ContainerSpec(
-            name=model_name.lower().replace(" ", "-")[:63],
-            image=model_image,
-            command=command,
-            env=env,
-            limits=ResourceLimits(cpus=cpus, memory=memory),
-            requests=ResourceLimits(cpus=cpus, memory=memory),
-            volumes=volumes,
-        )
-        return SystemSpec(
-            app_name="mism-run",
-            containers=[container],
-            identifier=sid,
-            namespace=self._settings.namespace,
-            service_account=self._settings.service_account,
-        )
-
-    def _build_volumes(
-        self, input_paths: list[tuple[str, str]], output_uri: str
-    ) -> list[VolumeMount]:
-        """Build input + output volume mounts from resolved Resource paths.
-
-        All mounts sharing the same PVC use a single volume name so K8s
-        only attaches the PVC once (Trident CSI hangs on duplicate refs).
-        """
-        pvc = self._settings.irods_pvc_name
-        vol_name = pvc
-        volumes: list[VolumeMount] = []
-
-        for i, (_rid, uri) in enumerate(input_paths):
-            volumes.append(
-                VolumeMount(
-                    name=vol_name,
-                    mount_path=f"/input/{i}" if len(input_paths) > 1 else "/input",
-                    pvc_name=pvc,
-                    sub_path=uri.lstrip("/"),
-                    read_only=True,
-                )
-            )
-
-        # Output mount — <resource-id>/<version>/ on the iRODS PVC
-        volumes.append(
-            VolumeMount(
-                name=vol_name,
-                mount_path="/output",
-                pvc_name=pvc,
-                sub_path=output_uri.lstrip("/"),
-                read_only=False,
-            )
-        )
-
-        return volumes
-
-    def _sync_live_status(
+    def _sync_batch_status(
         self,
         run_id: str,
         sid: str,
         current: RunStatus,
         notes: dict,
-    ) -> tuple[RunStatus, PodPhase | None, bool | None, str | None]:
-        """Check live K8s pod status and auto-update DAL if terminal."""
-        kube_status = self._compute.status(sid)
-        if kube_status is None:
-            return current, None, None, None
+    ) -> tuple[RunStatus, str | None, bool | None]:
+        """Check live batch Job status via appstore and auto-update DAL."""
+        job_status = self._appstore.job_status(sid)
+        if job_status is None:
+            return current, None, None
 
-        phase = kube_status.phase
-        is_ready = kube_status.is_ready
-        url = kube_status.url
+        phase = job_status.phase
         status = current
 
-        if phase == PodPhase.SUCCEEDED and current != RunStatus.COMPLETED:
+        if job_status.status == "succeeded" and current != RunStatus.COMPLETED:
             try:
                 self._complete_run(run_id, notes)
                 status = RunStatus.COMPLETED
             except Exception:
                 logger.warning(f"Failed to auto-complete run {run_id}")
-        elif phase == PodPhase.FAILED and current != RunStatus.FAILED:
+        elif job_status.status == "failed" and current != RunStatus.FAILED:
             try:
-                self._dal.mark_failed(run_id, "Pod terminated with non-zero exit")
+                self._dal.mark_failed(run_id, "Job terminated with non-zero exit")
                 status = RunStatus.FAILED
             except Exception:
                 logger.warning(f"Failed to auto-fail run {run_id}")
 
-        return status, phase, is_ready, url
+        is_ready = job_status.status == "running"
+        return status, phase, is_ready
 
     def _complete_run(self, run_id: str, notes: dict) -> None:
         """Register output Resource and mark run as completed."""

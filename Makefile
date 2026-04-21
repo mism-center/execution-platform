@@ -1,8 +1,8 @@
 .PHONY: install dev run test lint format typecheck clean
 
 install:
+	pip install -e "../metadata-schema[postgres]"
 	pip install -e ".[dev]"
-	pip install -e "../metadata-schema"
 
 dev:
 	uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 8000

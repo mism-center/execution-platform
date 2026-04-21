@@ -64,7 +64,7 @@ session.close()
 
 # === Step 3: Trigger execution ===
 print(f"\n=== Step 3: POST /api/v1/runs ===")
-resp = httpx.post(f"{EXEC_API}/api/v1/runs", json={"run_id": run.id}, follow_redirects=True)
+resp = httpx.post(f"{EXEC_API}/api/v1/runs", json={"run_id": run.id}, follow_redirects=True, timeout=120.0)
 print(f"  Status: {resp.status_code}")
 try:
     print(f"  Body: {resp.json()}")
@@ -79,7 +79,7 @@ if resp.status_code != 201:
 print("\n=== Step 4: Polling ===")
 for i in range(60):
     time.sleep(10)
-    resp = httpx.get(f"{EXEC_API}/api/v1/runs/{run.id}")
+    resp = httpx.get(f"{EXEC_API}/api/v1/runs/{run.id}", timeout=60.0)
     data = resp.json()
     print(f"  [{(i+1)*10:3d}s] status={data['status']}  phase={data.get('phase')}")
     if data["status"] in ("completed", "failed", "cancelled"):

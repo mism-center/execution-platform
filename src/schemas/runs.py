@@ -5,9 +5,6 @@ from __future__ import annotations
 from mism_registry import RunStatus
 from pydantic import BaseModel, Field
 
-from schemas.enums import PodPhase
-
-
 class CreateRunRequest(BaseModel):
     """POST /api/v1/runs — execute a pre-created Run from the DAL."""
 
@@ -36,7 +33,7 @@ class RunResponse(BaseModel):
     sid: str
     status: RunStatus
     mode: str | None = None  # "batch" or "interactive"
-    phase: PodPhase | None = None
+    phase: str | None = None
     is_ready: bool | None = None
     url: str | None = None  # Ambassador URL for interactive sessions
     error: str | None = None

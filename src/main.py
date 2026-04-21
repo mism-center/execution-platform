@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.v1 import poc, runs
+from api.v1 import runs
 from core.errors import register_error_handlers
 from core.logging import configure_logging
 from core.settings import get_settings
@@ -53,7 +53,6 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(runs.router, prefix="/api/v1")
-    app.include_router(poc.router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, str]:

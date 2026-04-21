@@ -46,22 +46,11 @@ probes:
     initialDelaySeconds: 3
     periodSeconds: 10
 
-# --- Application config ---
-config:
-  namespace: mism-test
-  serviceAccount: mism-exec
-  stubCompute: "false"
-  gpuResourceName: nvidia.com/gpu
-
 # --- Storage ---
 storage:
   irodsPvcName: irods-pvc
-  # Mount the iRODS PVC read-only on the execution platform pod
-  # so it can list/serve output files from past runs.
   mountIrodsPvc: true
   irodsMountPath: /irods
-  pocOutputPvc: mism-exec-output
-  pocOutputBaseDir: /mism/poc/outputs
 
 # --- DAL / Postgres ---
 database:
@@ -72,10 +61,6 @@ database:
   existingSecret: model-discovery-secrets
   secretKey: databasePassword
 
-# --- Vivarium PoC ---
-vivarium:
-  image: "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"
-
 # --- Appstore (interactive sessions) ---
 appstore:
   url: http://helx-appstore:8000
@@ -83,10 +68,3 @@ appstore:
   existingSecret: helx-appstore
   secretKey: APPSTORE_DJANGO_PASSWORD
   ambassadorUrl: https://mism-apps.apps.renci.org
-
-# --- Auth (not enforced yet — MISM-181) ---
-auth:
-  enabled: false
-  mode: oidc
-  oidcIssuerUrl: ""
-  oidcAudience: ""

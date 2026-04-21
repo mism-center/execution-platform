@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 from mism_registry import InMemoryRegistry, register_dataset
 
 from core.settings import Settings, get_settings
-from dependencies import get_compute, get_dal, get_run_service, get_vivarium_service
+from dependencies import get_dal, get_run_service
 from main import create_app
-from orchestration.stub import StubCompute
+from services.appstore_client import AppstoreClient, JobResult, JobStatus
 from services.dal_service import DALService
 from services.run_service import RunService
-from services.vivarium_service import VivariumService
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(namespace="test", database_url=None, stub_compute=True)
+    return Settings(database_url=None)
 
 
 @pytest.fixture
@@ -31,35 +32,37 @@ def dal(registry: InMemoryRegistry) -> DALService:
 
 
 @pytest.fixture
-def stub_compute() -> StubCompute:
-    return StubCompute()
+def mock_appstore() -> AppstoreClient:
+    """Mock appstore client that returns fake job results."""
+    client = MagicMock(spec=AppstoreClient)
+    client.launch_job.return_value = JobResult(
+        sid="fake-sid", name="fake-job", status="running"
+    )
+    client.job_status.return_value = JobStatus(
+        sid="fake-sid", name="fake-job", status="running", phase="running"
+    )
+    client.delete_job.return_value = None
+    client.delete_container.return_value = None
+    return client
 
 
 @pytest.fixture
-def run_service(dal: DALService, stub_compute: StubCompute, settings: Settings) -> RunService:
-    return RunService(dal=dal, compute=stub_compute, settings=settings)
-
-
-@pytest.fixture
-def vivarium_service(stub_compute: StubCompute, settings: Settings) -> VivariumService:
-    return VivariumService(compute=stub_compute, settings=settings)
+def run_service(dal: DALService, mock_appstore: AppstoreClient, settings: Settings) -> RunService:
+    return RunService(dal=dal, appstore=mock_appstore, settings=settings)
 
 
 @pytest.fixture
 def client(
     dal: DALService,
-    stub_compute: StubCompute,
+    mock_appstore: AppstoreClient,
     run_service: RunService,
-    vivarium_service: VivariumService,
     settings: Settings,
 ) -> TestClient:
-    """TestClient with StubCompute and real InMemory DAL."""
+    """TestClient with mock appstore and real InMemory DAL."""
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_dal] = lambda: dal
-    app.dependency_overrides[get_compute] = lambda: stub_compute
     app.dependency_overrides[get_run_service] = lambda: run_service
-    app.dependency_overrides[get_vivarium_service] = lambda: vivarium_service
     return TestClient(app)
 
 
