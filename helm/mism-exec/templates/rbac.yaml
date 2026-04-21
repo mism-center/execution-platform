@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mism-exec.serviceAccountName" . }}-role
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mism-exec.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mism-exec.serviceAccountName" . }}-binding
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mism-exec.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mism-exec.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "mism-exec.serviceAccountName" . }}-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

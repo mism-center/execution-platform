@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+.git
+.github
+.claude
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+docs/
+tests/
+.env
+vendor/metadata-schema/.git
+vendor/metadata-schema/tests
+vendor/metadata-schema/__pycache__

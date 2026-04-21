@@ -1,0 +1,19 @@
+version: "3"
+
+services:
+  mism-exec:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 8000:8000
+    environment:
+      - NAMESPACE=mism-test
+      - STUB_COMPUTE=true
+      - DATABASE_URL=postgresql+psycopg2://mism:changeme@host.docker.internal:5434/mism
+      - IRODS_PVC_NAME=irods-pvc
+      - SERVICE_ACCOUNT=default
+      - APPSTORE_URL=http://host.docker.internal:8001
+      - APPSTORE_USERNAME=admin
+      - APPSTORE_PASSWORD=admin
+      - AMBASSADOR_URL=https://mism-apps.apps.renci.org

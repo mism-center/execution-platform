@@ -1,0 +1,70 @@
+replicaCount: 1
+
+image:
+  repository: helxplatform/mism-exec
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: image-pull-secret
+
+serviceAccount:
+  create: true
+  name: mism-exec
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  host: mism-exec.apps.renci.org
+  tls:
+    secretName: mism-exec.apps.renci.org-tls
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 30
+  readiness:
+    path: /healthz
+    initialDelaySeconds: 3
+    periodSeconds: 10
+
+# --- Storage ---
+storage:
+  irodsPvcName: irods-pvc
+  mountIrodsPvc: true
+  irodsMountPath: /irods
+
+# --- DAL / Postgres ---
+database:
+  host: metadata-store
+  port: 5432
+  name: mism
+  user: mism
+  existingSecret: model-discovery-secrets
+  secretKey: databasePassword
+
+# --- Appstore (interactive sessions) ---
+appstore:
+  url: http://helx-appstore:8000
+  username: admin
+  existingSecret: helx-appstore
+  secretKey: APPSTORE_DJANGO_PASSWORD
+  ambassadorUrl: https://mism-apps.apps.renci.org
