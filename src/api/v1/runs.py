@@ -134,6 +134,21 @@ async def download_run_file(
     )
 
 
+@router.post("/{run_id}/complete", response_model=RunResponse)
+async def complete_interactive(
+    run_id: str,
+    service: Annotated[RunService, Depends(get_run_service)],
+) -> RunResponse:
+    """Complete an interactive session: register outputs and terminate the container."""
+    try:
+        result = service.complete_interactive(run_id)
+    except ValueError as e:
+        raise ValidationError(detail=str(e)) from e
+    except RuntimeError as e:
+        raise OrchestrationError(detail=str(e)) from e
+    return result
+
+
 @router.post("/{run_id}/interactive", status_code=201)
 async def create_interactive(
     run_id: str,

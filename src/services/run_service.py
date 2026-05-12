@@ -219,6 +219,7 @@ class RunService:
             "MODEL_ID": model.id,
             "RUN_ID": run_id,
             "JUPYTER_TOKEN": jupyter_token,
+            "OUTPUT_PATH": "/data/output",
         }
 
         session = self._appstore.launch(
@@ -251,6 +252,55 @@ class RunService:
             url=url,
             status=RunStatus.RUNNING,
         )
+
+    # ------------------------------------------------------------------
+    # Complete interactive session
+    # ------------------------------------------------------------------
+
+    def complete_interactive(self, run_id: str) -> RunResponse:
+        """Mark an interactive session done: register outputs and kill the container.
+
+        Called when the user signals they are finished with the session.
+        Registers whatever is in /data/output on the PVC as the output Resource,
+        marks the run COMPLETED in the DAL, then terminates the container.
+        """
+        run = self._dal.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run {run_id} not found in DAL")
+
+        notes = self._unpack_notes(run.notes)
+        mode = notes.get("mode")
+        status = RunStatus(run.status.value)
+
+        if mode != "interactive":
+            raise ValueError(
+                f"Run {run_id} is not an interactive session (mode={mode})"
+            )
+        if status != RunStatus.RUNNING:
+            raise ValueError(
+                f"Run {run_id} cannot be completed from status={status.value}"
+            )
+
+        sid = notes.get("sid")
+
+        try:
+            self._complete_run(run_id, notes)
+        except Exception as e:
+            raise RuntimeError(f"Failed to complete run {run_id} in DAL: {e}") from e
+
+        if sid:
+            try:
+                self._appstore.delete_container(sid)
+            except Exception:
+                logger.warning(
+                    f"Failed to delete container sid={sid} for run {run_id} — "
+                    "container may already be gone"
+                )
+
+        result = self.get_run(run_id)
+        if result is None:
+            raise RuntimeError(f"Run {run_id} not found after completion")
+        return result
 
     # ------------------------------------------------------------------
     # Query & lifecycle
