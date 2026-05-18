@@ -12,9 +12,6 @@ serviceAccount:
   create: true
   name: mism-exec
 
-rbac:
-  create: true
-
 service:
   type: ClusterIP
   port: 8000

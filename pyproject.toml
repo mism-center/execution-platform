@@ -9,7 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.2",
     "httpx>=0.27",
-    "mism-registry[postgres]",
+    "mism-registry[postgres] @ git+https://github.com/mism-center/metadata-schema.git",
 ]
 
 [tool.hatch.metadata]
