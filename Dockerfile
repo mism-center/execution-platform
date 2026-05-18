@@ -5,19 +5,10 @@ LABEL description="MISM Execution Platform API"
 
 WORKDIR /app
 
-# Copy mism-registry (DAL) first — it's a local dependency
-COPY vendor/metadata-schema /app/vendor/metadata-schema
-
-# Copy execution platform source
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-# Install both packages
-RUN pip install --no-cache-dir \
-    /app/vendor/metadata-schema \
-    . \
-    && pip cache purge \
-    && rm -rf /app/vendor
+RUN pip install --no-cache-dir . && pip cache purge
 
 EXPOSE 8000
 

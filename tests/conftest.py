@@ -11,7 +11,7 @@ from mism_registry import InMemoryRegistry, register_dataset
 from core.settings import Settings, get_settings
 from dependencies import get_dal, get_run_service
 from main import create_app
-from services.appstore_client import AppstoreClient, JobResult, JobStatus
+from services.appstore_client import AppstoreClient, InteractiveSession, JobResult, JobStatus
 from services.dal_service import DALService
 from services.run_service import RunService
 
@@ -35,6 +35,9 @@ def dal(registry: InMemoryRegistry) -> DALService:
 def mock_appstore() -> AppstoreClient:
     """Mock appstore client that returns fake job results."""
     client = MagicMock(spec=AppstoreClient)
+    client.launch.return_value = InteractiveSession(
+        sid="fake-sid", url="/private/fake-container/", name="fake-container"
+    )
     client.launch_job.return_value = JobResult(
         sid="fake-sid", name="fake-job", status="running"
     )

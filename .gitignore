@@ -17,9 +17,6 @@ venv/
 .vscode/
 *.swp
 
-# Vendored repos (installed via pyproject.toml)
-vendor/
-
 # OS
 .DS_Store
 Thumbs.db

@@ -21,9 +21,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Startup — nothing to initialise for now; add K8s client cleanup here later.
     yield
     # Shutdown — clear cached singletons so tests stay isolated.
-    from dependencies import _create_compute, _create_dal
+    from dependencies import _create_appstore, _create_dal
 
-    _create_compute.cache_clear()
+    _create_appstore.cache_clear()
     _create_dal.cache_clear()
     get_settings.cache_clear()
 

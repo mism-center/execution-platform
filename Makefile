@@ -1,7 +1,6 @@
 .PHONY: install dev run test lint format typecheck clean
 
 install:
-	pip install -e "../metadata-schema[postgres]"
 	pip install -e ".[dev]"
 
 dev:

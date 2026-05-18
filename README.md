@@ -34,6 +34,7 @@ Discovery Gateway  ──>  Execution Platform (FastAPI)
 | `GET` | `/api/v1/runs` | List all runs |
 | `GET` | `/api/v1/runs/{run_id}` | Get a run (includes live status) |
 | `POST` | `/api/v1/runs/{run_id}/interactive` | Launch interactive session (via appstore) |
+| `POST` | `/api/v1/runs/{run_id}/complete` | Complete an interactive session and register outputs |
 | `GET` | `/api/v1/runs/{run_id}/files` | List output files |
 | `GET` | `/api/v1/runs/{run_id}/files/{filename}` | Download an output file |
 | `DELETE` | `/api/v1/runs/{run_id}` | Cancel a run and delete K8s resources |
@@ -44,7 +45,6 @@ Discovery Gateway  ──>  Execution Platform (FastAPI)
 ### Prerequisites
 
 - Python 3.10+
-- The [mism-registry](../metadata-schema) package
 
 ### Install
 
@@ -101,6 +101,16 @@ curl -X POST https://mism-exec.apps.renci.org/api/v1/runs/<run-id>/interactive
 
 Returns a URL to the interactive container (e.g., Jupyter).
 
+### Complete an interactive session
+
+When the user is finished, call `/complete` to register output files in the DAL and terminate the container:
+
+```bash
+curl -X POST https://mism-exec.apps.renci.org/api/v1/runs/<run-id>/complete
+```
+
+Returns the final run state with `status: completed` and `output_resources` populated.
+
 ### List output files
 
 ```bash
@@ -136,9 +146,12 @@ execution-platform/
 │       ├── types.py                 # Validated types
 │       └── runs.py                  # Run request/response models
 ├── tests/
-├── scripts/                         # Test scripts for batch + interactive flows
+├── scripts/                         # Manual test scripts for batch + interactive flows
+│   ├── config.py                    # Shared config (reads from env vars)
+│   ├── .env.example                 # Template for scripts/.env
+│   ├── test_batch_execution.py
+│   └── test_interactive_session.py
 ├── helm/mism-exec/                  # Helm chart
-├── k8s/                             # Raw K8s manifests
 ├── docs/                            # Architecture documents
 ├── pyproject.toml
 ├── Makefile

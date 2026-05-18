@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -149,11 +148,11 @@ async def complete_interactive(
     return result
 
 
-@router.post("/{run_id}/interactive", status_code=201)
+@router.post("/{run_id}/interactive", response_model=RunResponse, status_code=201)
 async def create_interactive(
     run_id: str,
     service: Annotated[RunService, Depends(get_run_service)],
-) -> dict:
+) -> RunResponse:
     """Launch an interactive session for a Run."""
     try:
         result = service.create_interactive(run_id)
@@ -162,12 +161,13 @@ async def create_interactive(
     except RuntimeError as e:
         raise OrchestrationError(detail=str(e)) from e
 
-    return {
-        "run_id": result.run_id,
-        "sid": result.sid,
-        "url": result.url,
-        "status": result.status.value,
-    }
+    return RunResponse(
+        run_id=result.run_id,
+        sid=result.sid,
+        status=result.status,
+        mode="interactive",
+        url=result.url,
+    )
 
 
 @router.delete("/{run_id}", status_code=204)

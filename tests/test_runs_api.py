@@ -87,3 +87,52 @@ class TestDeleteRun:
         assert resp.status_code == 404
 
 
+class TestCompleteInteractive:
+    def _start_interactive(self, client: TestClient, dal: DALService) -> str:
+        run_id = create_test_run(dal)
+        resp = client.post(f"/api/v1/runs/{run_id}/interactive")
+        assert resp.status_code == 201
+        return run_id
+
+    def test_complete_success(self, client: TestClient, dal: DALService) -> None:
+        run_id = self._start_interactive(client, dal)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/complete")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["run_id"] == run_id
+        assert body["status"] == RunStatus.COMPLETED.value
+        assert body["mode"] == "interactive"
+
+    def test_complete_registers_output_resource(self, client: TestClient, dal: DALService) -> None:
+        run_id = self._start_interactive(client, dal)
+
+        client.post(f"/api/v1/runs/{run_id}/complete")
+
+        resp = client.get(f"/api/v1/runs/{run_id}")
+        body = resp.json()
+        assert len(body["output_resources"]) == 1
+        assert body["output_resources"][0]["location_uri"]
+
+    def test_complete_not_found(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/runs/nonexistent/complete")
+        assert resp.status_code == 400
+        assert "not found" in resp.json()["error"]["detail"].lower()
+
+    def test_complete_wrong_mode(self, client: TestClient, dal: DALService) -> None:
+        run_id = create_test_run(dal)
+        client.post("/api/v1/runs", json={"run_id": run_id})  # batch run
+
+        resp = client.post(f"/api/v1/runs/{run_id}/complete")
+        assert resp.status_code == 400
+        assert "not an interactive session" in resp.json()["error"]["detail"].lower()
+
+    def test_complete_already_completed(self, client: TestClient, dal: DALService) -> None:
+        run_id = self._start_interactive(client, dal)
+        client.post(f"/api/v1/runs/{run_id}/complete")
+
+        resp = client.post(f"/api/v1/runs/{run_id}/complete")
+        assert resp.status_code == 400
+        assert "cannot be completed" in resp.json()["error"]["detail"].lower()
+
+

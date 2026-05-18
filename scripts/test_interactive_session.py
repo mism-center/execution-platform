@@ -7,15 +7,15 @@
 4. Surface the accessible URL
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from config import DB_URL, EXEC_API, MODEL_IMAGE
+
 import httpx
 from mism_registry import register_model, register_dataset, prepare_run, ExecutionType
 from mism_registry.backends.postgres import create_registry
-
-# --- Config ---
-DB_URL = "postgresql+psycopg2://mism:changeme@localhost:5434/mism"
-EXEC_API = "https://mism-exec.apps.renci.org"
-# EXEC_API = "http://localhost:8000"  # local testing
-VIVARIUM_IMAGE = "helxplatform/vivarium-jupyter@sha256:c2bda6bbddea091ed4aa96f1fa3b6b41f51ad234d432c2412dd4919b76c77f6d"
 
 # === Step 1: Register resources in DAL ===
 print("=== Step 1: Register model + dataset ===")
@@ -26,7 +26,7 @@ model = register_model(
     name="vivarium-interactive",
     location_uri="/models/vivarium-interactive",
     execution_type=ExecutionType.DOCKER,
-    execution_ref=VIVARIUM_IMAGE,
+    execution_ref=MODEL_IMAGE,
     metadata={
         "resource_requirements": {"cpus": "1", "memory": "2Gi"},
     },

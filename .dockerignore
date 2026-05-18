@@ -7,9 +7,12 @@ __pycache__
 .mypy_cache
 .ruff_cache
 *.egg-info
+.DS_Store
 docs/
 tests/
+scripts/
+helm/
+Makefile
+*.md
+*.png
 .env
-vendor/metadata-schema/.git
-vendor/metadata-schema/tests
-vendor/metadata-schema/__pycache__
