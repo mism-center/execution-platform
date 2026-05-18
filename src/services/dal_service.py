@@ -12,8 +12,9 @@ failed query from poisoning all subsequent requests.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING
 
 from mism_registry import (
     ExecutionType,
@@ -46,7 +47,7 @@ DEFAULT_RESOURCE_REQUIREMENTS = {
 }
 
 
-def create_registry(settings: "Settings") -> "Registry | sessionmaker":
+def create_registry(settings: Settings) -> Registry | sessionmaker:
     """Factory: returns InMemoryRegistry or a Postgres session factory."""
     if settings.database_url:
         from mism_registry.backends.postgres import create_session_factory
@@ -58,7 +59,7 @@ def create_registry(settings: "Settings") -> "Registry | sessionmaker":
 class DALService:
     """High-level operations the execution platform needs from the DAL."""
 
-    def __init__(self, registry_or_factory: "Registry | sessionmaker") -> None:
+    def __init__(self, registry_or_factory: Registry | sessionmaker) -> None:
         if isinstance(registry_or_factory, InMemoryRegistry):
             self._factory = None
             self._in_memory = registry_or_factory
