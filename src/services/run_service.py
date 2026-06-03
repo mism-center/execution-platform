@@ -94,7 +94,7 @@ class RunService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _generate_output_resource(model_name: str, run_id: str) -> tuple[str, str]:
+    def _generate_output_resource() -> tuple[str, str]:
         """Pre-generate an output Resource ID and location_uri.
 
         Convention: ``<resource-id>/v1`` on the PVC.
@@ -129,9 +129,7 @@ class RunService:
         cpus = resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"])
         memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
-        output_resource_id, output_uri = self._generate_output_resource(
-            model.name, run_id
-        )
+        output_resource_id, output_uri = self._generate_output_resource()
 
         sid = uuid.uuid4().hex
         pvc = self._settings.irods_pvc_name
@@ -168,7 +166,7 @@ class RunService:
         try:
             self._dal.mark_running(run_id, notes=notes)
         except Exception:
-            logger.warning(f"Non-blocking: failed to update run {run_id} to running")
+            logger.warning(f"Non-blocking: failed to update run {run_id} to running", exc_info=True)
 
         return RunResult(
             run_id=run_id,
@@ -205,9 +203,7 @@ class RunService:
         cpus = float(resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"]))
         memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
-        output_resource_id, output_uri = self._generate_output_resource(
-            model.name, run_id
-        )
+        output_resource_id, output_uri = self._generate_output_resource()
 
         pvc = self._settings.irods_pvc_name
         pvc_mounts = self._build_pvc_mounts(
@@ -244,7 +240,7 @@ class RunService:
         try:
             self._dal.mark_running(run_id, notes=notes)
         except Exception:
-            logger.warning(f"Non-blocking: failed to update run {run_id} to running")
+            logger.warning(f"Non-blocking: failed to update run {run_id} to running", exc_info=True)
 
         return InteractiveResult(
             run_id=run_id,
@@ -294,7 +290,8 @@ class RunService:
             except Exception:
                 logger.warning(
                     f"Failed to delete container sid={sid} for run {run_id} — "
-                    "container may already be gone"
+                    "container may already be gone",
+                    exc_info=True,
                 )
 
         result = self.get_run(run_id)
@@ -373,7 +370,7 @@ class RunService:
             try:
                 self._dal.cancel(run_id)
             except Exception:
-                logger.warning(f"Failed to cancel run {run_id} in DAL")
+                logger.warning(f"Failed to cancel run {run_id} in DAL", exc_info=True)
 
         if sid:
             try:
@@ -382,7 +379,7 @@ class RunService:
                 else:
                     self._appstore.delete_job(sid)
             except Exception:
-                logger.warning(f"Failed to delete K8s resources for sid={sid}")
+                logger.warning(f"Failed to delete K8s resources for sid={sid}", exc_info=True)
 
         return True
 
@@ -460,13 +457,13 @@ class RunService:
                 self._complete_run(run_id, notes)
                 status = RunStatus.COMPLETED
             except Exception:
-                logger.warning(f"Failed to auto-complete run {run_id}")
+                logger.warning(f"Failed to auto-complete run {run_id}", exc_info=True)
         elif job_status.status == "failed" and current != RunStatus.FAILED:
             try:
                 self._dal.mark_failed(run_id, "Job terminated with non-zero exit")
                 status = RunStatus.FAILED
             except Exception:
-                logger.warning(f"Failed to auto-fail run {run_id}")
+                logger.warning(f"Failed to auto-fail run {run_id}", exc_info=True)
 
         is_ready = job_status.status == "running"
         return status, phase, is_ready
@@ -493,4 +490,4 @@ class RunService:
         try:
             self._dal.cancel(run_id)
         except Exception:
-            logger.warning(f"Failed to cancel run {run_id} after K8s error")
+            logger.warning(f"Failed to cancel run {run_id} after K8s error", exc_info=True)
