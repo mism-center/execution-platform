@@ -8,7 +8,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir . && pip cache purge
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && pip install --no-cache-dir . \
+    && pip cache purge \
+    && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8000
 
