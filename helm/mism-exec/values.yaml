@@ -48,6 +48,7 @@ storage:
   irodsPvcName: irods-pvc
   mountIrodsPvc: true
   irodsMountPath: /irods
+  readOnly: false
 
 # --- DAL / Postgres ---
 database:
@@ -65,3 +66,6 @@ appstore:
   existingSecret: helx-appstore
   secretKey: APPSTORE_DJANGO_PASSWORD
   ambassadorUrl: https://mism-apps.apps.renci.org
+
+securityContext:
+  runAsUser: 995
