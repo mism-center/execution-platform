@@ -24,6 +24,10 @@ spec:
         - name: mism-exec
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: {{ .Values.service.port }}
               protocol: TCP
@@ -56,7 +60,7 @@ spec:
           volumeMounts:
             - name: irods-data
               mountPath: {{ .Values.storage.irodsMountPath }}
-              readOnly: true
+              readOnly: {{ .Values.storage.readOnly }}
           {{- end }}
           livenessProbe:
             httpGet:
@@ -75,5 +79,5 @@ spec:
         - name: irods-data
           persistentVolumeClaim:
             claimName: {{ .Values.storage.irodsPvcName }}
-            readOnly: true
+            readOnly: {{ .Values.storage.readOnly }}
       {{- end }}
