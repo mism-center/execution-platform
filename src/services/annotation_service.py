@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from functools import partial
 
 from mism_registry import ResourceRegistrationStatus
@@ -38,9 +37,10 @@ class AnnotationService:
     async def annotate(self, request: AnnotateRequest) -> AnnotateResponse:
         """Kick off an annotation job for a model resource.
 
-        Validates the resource exists and is in a state that allows annotation,
-        launches the annotator pod via appstore, stores the job SID, and
-        transitions the resource to ANNOTATING.
+        The resource_id is used as the appstore job identifier so the poller
+        can check status without storing a separate SID. On retry
+        (ANNOTATION_FAILED), the previous failed job is deleted first to avoid
+        K8s name conflicts.
         """
         resource = await self._in_executor(self._dal.get_resource, request.resource_id)
         if resource is None:
@@ -52,6 +52,21 @@ class AnnotationService:
                 f"Resource {request.resource_id} cannot be annotated from "
                 f"status={resource.registration_status.value}"
             )
+
+        # On retry, the previous failed K8s Job still exists and would cause a
+        # 409 conflict. Delete it first — ignore 404 if already cleaned up.
+        if resource.registration_status == ResourceRegistrationStatus.ANNOTATION_FAILED:
+            try:
+                await self._appstore.delete_job(request.resource_id)
+                logger.info(
+                    f"Deleted previous failed annotation job for resource {request.resource_id}"
+                )
+            except Exception:
+                logger.warning(
+                    f"Could not delete previous annotation job for resource {request.resource_id} "
+                    "— may already be gone",
+                    exc_info=True,
+                )
 
         pvc_mounts = [{
             "pvc": self._settings.irods_pvc_name,
@@ -68,8 +83,8 @@ class AnnotationService:
 
         try:
             result = await self._appstore.launch_job(
-                name=f"mism-annotate-{request.resource_id[:8]}".lower(),
-                identifier=uuid.uuid4().hex,
+                name=f"annotate-{request.resource_id[:8]}".lower(),
+                identifier=request.resource_id,
                 image=request.image,
                 cpus=request.cpus,
                 memory=request.memory,
@@ -81,19 +96,14 @@ class AnnotationService:
 
         try:
             await self._in_executor(
-                self._dal.update_resource_metadata,
-                request.resource_id,
-                {"annotation_job_sid": result.sid},
-            )
-            await self._in_executor(
                 self._dal.set_resource_registration_status,
                 request.resource_id,
                 ResourceRegistrationStatus.ANNOTATING,
             )
         except Exception as e:
             logger.warning(
-                f"Annotation job launched (sid={result.sid}) but failed to update "
-                f"resource {request.resource_id} state",
+                f"Annotation job launched (sid={result.sid}) but failed to transition "
+                f"resource {request.resource_id} to ANNOTATING",
                 exc_info=True,
             )
             raise RuntimeError(f"Job launched but failed to update resource state: {e}") from e
@@ -111,23 +121,22 @@ class AnnotationService:
             ResourceRegistrationStatus.ANNOTATING,
         )
         for resource in resources:
-            sid = resource.metadata.get("annotation_job_sid")
-            if not sid:
-                logger.warning(
-                    f"Resource {resource.id} is ANNOTATING but has no annotation_job_sid"
-                )
-                continue
             try:
-                await self._sync_annotation_status(resource.id, sid)
+                await self._sync_annotation_status(resource.id)
             except Exception:
                 logger.warning(
                     f"Poller: failed to sync annotation for resource {resource.id}",
                     exc_info=True,
                 )
 
-    async def _sync_annotation_status(self, resource_id: str, sid: str) -> None:
-        """Check appstore job status and transition resource registration status."""
-        job_status = await self._appstore.job_status(sid)
+    async def _sync_annotation_status(self, resource_id: str) -> None:
+        """Check appstore job status and transition resource registration status.
+
+        The job SID equals the resource_id — no metadata lookup needed.
+        Deletes the K8s Job after every terminal transition to prevent stale
+        jobs from blocking future retries.
+        """
+        job_status = await self._appstore.job_status(resource_id)
         if job_status is None:
             return
 
@@ -137,11 +146,6 @@ class AnnotationService:
                 resource_id,
                 ResourceRegistrationStatus.PENDING_REVIEW,
             )
-            await self._in_executor(
-                self._dal.update_resource_metadata,
-                resource_id,
-                {"annotation_job_sid": None},
-            )
             logger.info(f"Resource {resource_id} annotation succeeded → pending_review")
 
         elif job_status.status == "failed":
@@ -150,9 +154,17 @@ class AnnotationService:
                 resource_id,
                 ResourceRegistrationStatus.ANNOTATION_FAILED,
             )
-            await self._in_executor(
-                self._dal.update_resource_metadata,
-                resource_id,
-                {"annotation_job_sid": None},
-            )
             logger.info(f"Resource {resource_id} annotation failed → annotation_failed")
+
+        else:
+            return
+
+        # Clean up the finished K8s Job so retries aren't blocked by stale objects.
+        try:
+            await self._appstore.delete_job(resource_id)
+        except Exception:
+            logger.warning(
+                f"Failed to delete annotation job for resource {resource_id} "
+                "after terminal transition",
+                exc_info=True,
+            )
