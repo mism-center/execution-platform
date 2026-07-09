@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from mism_registry import RunStatus
 
-from services.appstore_client import JobStatus
 from services.dal_service import DALService
 from services.run_service import RunService
 from tests.conftest import create_test_run
@@ -59,6 +58,7 @@ class TestRunService:
         assert result.run_id == run_id
 
 
+# from services.appstore_client import JobStatus
 # class TestPollBatchRuns:
 #     async def test_poll_completes_succeeded_run(
 #         self, run_service: RunService, dal: DALService, mock_appstore
