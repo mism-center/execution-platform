@@ -26,7 +26,7 @@ async def create_run(
 ) -> RunResponse:
     """Execute a pre-created Run from the DAL."""
     try:
-        result = service.create_run(body.run_id)
+        result = await service.create_run(body.run_id)
     except ValueError as e:
         raise ValidationError(detail=str(e)) from e
     except RuntimeError as e:
@@ -47,7 +47,7 @@ async def list_runs(
     service: Annotated[RunService, Depends(get_run_service)],
 ) -> RunListResponse:
     """List all runs."""
-    return RunListResponse(runs=service.list_runs())
+    return RunListResponse(runs=await service.list_runs())
 
 
 @router.get("/{run_id}", response_model=RunResponse)
@@ -56,7 +56,7 @@ async def get_run(
     service: Annotated[RunService, Depends(get_run_service)],
 ) -> RunResponse:
     """Get a run resource, including live K8s status if active."""
-    result = service.get_run(run_id)
+    result = await service.get_run(run_id)
     if result is None:
         raise NotFoundError(detail=f"Run {run_id} not found")
     return result
@@ -68,7 +68,7 @@ async def list_run_files(
     service: Annotated[RunService, Depends(get_run_service)],
 ) -> list[FileInfo]:
     """List output files for a completed run."""
-    run = service.get_run(run_id)
+    run = await service.get_run(run_id)
     if run is None:
         raise NotFoundError(detail=f"Run {run_id} not found")
 
@@ -107,7 +107,7 @@ async def download_run_file(
     if ".." in filename or "/" in filename or "\\" in filename:
         raise ValidationError(detail="Invalid filename")
 
-    run = service.get_run(run_id)
+    run = await service.get_run(run_id)
     if run is None:
         raise NotFoundError(detail=f"Run {run_id} not found")
 
@@ -140,7 +140,7 @@ async def complete_interactive(
 ) -> RunResponse:
     """Complete an interactive session: register outputs and terminate the container."""
     try:
-        result = service.complete_interactive(run_id)
+        result = await service.complete_interactive(run_id)
     except ValueError as e:
         raise ValidationError(detail=str(e)) from e
     except RuntimeError as e:
@@ -155,7 +155,7 @@ async def create_interactive(
 ) -> RunResponse:
     """Launch an interactive session for a Run."""
     try:
-        result = service.create_interactive(run_id)
+        result = await service.create_interactive(run_id)
     except ValueError as e:
         raise ValidationError(detail=str(e)) from e
     except RuntimeError as e:
@@ -176,6 +176,6 @@ async def delete_run(
     service: Annotated[RunService, Depends(get_run_service)],
 ) -> None:
     """Cancel a run and delete its K8s resources."""
-    deleted = service.delete_run(run_id)
+    deleted = await service.delete_run(run_id)
     if not deleted:
         raise NotFoundError(detail=f"Run {run_id} not found")

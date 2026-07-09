@@ -6,15 +6,21 @@ Endpoints are thin wrappers that delegate to this service.
 All K8s orchestration is delegated to the appstore:
 - Batch: K8s Jobs via /api/v1/jobs/
 - Interactive: K8s Deployments via /api/v1/containers/
+
+DAL calls are synchronous (SQLAlchemy + psycopg) and are offloaded to a
+thread pool via run_in_executor to avoid blocking the async event loop.
+Appstore calls use the async AppstoreClient.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
 import uuid
 from dataclasses import dataclass
+from functools import partial
 
 from mism_registry import Resource, ResourceType, RunStatus
 
@@ -104,16 +110,26 @@ class RunService:
         return resource_id, location_uri
 
     # ------------------------------------------------------------------
+    # Thread-pool helper for sync DAL calls
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _in_executor(fn, *args, **kwargs):
+        """Run a synchronous function in the default thread pool."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
+
+    # ------------------------------------------------------------------
     # Batch execution (via appstore /api/v1/jobs/)
     # ------------------------------------------------------------------
 
-    def create_run(self, run_id: str) -> RunResult:
+    async def create_run(self, run_id: str) -> RunResult:
         """Execute a pre-created Run as a headless batch Job."""
-        run = self._dal.get_run(run_id)
+        run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found in DAL")
 
-        model = self._dal.get_resource(run.model_id)
+        model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
         if not model.execution_ref:
@@ -121,7 +137,9 @@ class RunService:
                 f"Model {run.model_id} has no execution_ref (container image)"
             )
 
-        input_paths = self._resolve_input_paths(run.input_resource_ids)
+        input_paths = await self._in_executor(
+            self._resolve_input_paths, run.input_resource_ids
+        )
 
         resource_reqs = model.metadata.get(
             "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
@@ -134,7 +152,6 @@ class RunService:
         sid = uuid.uuid4().hex
         pvc = self._settings.irods_pvc_name
 
-        # Build PVC mounts
         pvc_mounts = self._build_pvc_mounts(input_paths, output_uri, pvc)
 
         env = {
@@ -146,7 +163,7 @@ class RunService:
         command = model.metadata.get("command")
 
         try:
-            result = self._appstore.launch_job(
+            result = await self._appstore.launch_job(
                 name=f"mism-{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
                 identifier=sid,
                 image=model.execution_ref,
@@ -157,14 +174,14 @@ class RunService:
                 pvc_mounts=pvc_mounts,
             )
         except Exception as e:
-            self._safe_cancel(run_id)
+            await self._in_executor(self._safe_cancel, run_id)
             raise RuntimeError(f"Failed to launch job: {e}") from e
 
         notes = self._pack_notes(
             result.sid, output_resource_id, output_uri, mode="batch"
         )
         try:
-            self._dal.mark_running(run_id, notes=notes)
+            await self._in_executor(self._dal.mark_running, run_id, notes)
         except Exception:
             logger.warning(f"Non-blocking: failed to update run {run_id} to running", exc_info=True)
 
@@ -179,15 +196,15 @@ class RunService:
     # Interactive session (via appstore /api/v1/containers/)
     # ------------------------------------------------------------------
 
-    def create_interactive(self, run_id: str) -> InteractiveResult:
+    async def create_interactive(self, run_id: str) -> InteractiveResult:
         """Launch an interactive session for a Run via the appstore."""
         jupyter_token = secrets.token_urlsafe(32)
 
-        run = self._dal.get_run(run_id)
+        run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found in DAL")
 
-        model = self._dal.get_resource(run.model_id)
+        model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
         if not model.execution_ref:
@@ -195,7 +212,9 @@ class RunService:
                 f"Model {run.model_id} has no execution_ref (container image)"
             )
 
-        input_paths = self._resolve_input_paths(run.input_resource_ids)
+        input_paths = await self._in_executor(
+            self._resolve_input_paths, run.input_resource_ids
+        )
 
         resource_reqs = model.metadata.get(
             "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
@@ -218,7 +237,7 @@ class RunService:
             "OUTPUT_PATH": "/data/output",
         }
 
-        session = self._appstore.launch(
+        session = await self._appstore.launch(
             image=model.execution_ref,
             name=f"{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
             cpus=cpus,
@@ -227,7 +246,6 @@ class RunService:
             pvc_mounts=pvc_mounts,
         )
 
-        # Build the user-facing URL via Ambassador ingress
         path = session.url.split("/private/", 1)[-1] if "/private/" in session.url else ""
         ambassador_base = self._settings.ambassador_url.rstrip("/")
         base_url = f"{ambassador_base}/private/{path}" if path else session.url
@@ -238,7 +256,7 @@ class RunService:
             mode="interactive", url=url,
         )
         try:
-            self._dal.mark_running(run_id, notes=notes)
+            await self._in_executor(self._dal.mark_running, run_id, notes)
         except Exception:
             logger.warning(f"Non-blocking: failed to update run {run_id} to running", exc_info=True)
 
@@ -253,14 +271,9 @@ class RunService:
     # Complete interactive session
     # ------------------------------------------------------------------
 
-    def complete_interactive(self, run_id: str) -> RunResponse:
-        """Mark an interactive session done: register outputs and kill the container.
-
-        Called when the user signals they are finished with the session.
-        Registers whatever is in /data/output on the PVC as the output Resource,
-        marks the run COMPLETED in the DAL, then terminates the container.
-        """
-        run = self._dal.get_run(run_id)
+    async def complete_interactive(self, run_id: str) -> RunResponse:
+        """Mark an interactive session done: register outputs and kill the container."""
+        run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found in DAL")
 
@@ -280,13 +293,13 @@ class RunService:
         sid = notes.get("sid")
 
         try:
-            self._complete_run(run_id, notes)
+            await self._in_executor(self._complete_run, run_id, notes)
         except Exception as e:
             raise RuntimeError(f"Failed to complete run {run_id} in DAL: {e}") from e
 
         if sid:
             try:
-                self._appstore.delete_container(sid)
+                await self._appstore.delete_container(sid)
             except Exception:
                 logger.warning(
                     f"Failed to delete container sid={sid} for run {run_id} — "
@@ -294,7 +307,7 @@ class RunService:
                     exc_info=True,
                 )
 
-        result = self.get_run(run_id)
+        result = await self.get_run(run_id)
         if result is None:
             raise RuntimeError(f"Run {run_id} not found after completion")
         return result
@@ -303,9 +316,9 @@ class RunService:
     # Query & lifecycle
     # ------------------------------------------------------------------
 
-    def get_run(self, run_id: str) -> RunResponse | None:
+    async def get_run(self, run_id: str) -> RunResponse | None:
         """Get a run resource, enriched with live status if active."""
-        run = self._dal.get_run(run_id)
+        run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             return None
 
@@ -319,10 +332,11 @@ class RunService:
         is_ready: bool | None = None
 
         if status in (RunStatus.REGISTERED, RunStatus.RUNNING) and sid and mode == "batch":
-            status, phase, is_ready = self._sync_batch_status(run_id, sid, status, notes)
-        # Interactive status comes from notes (url) — no live polling needed for MVP
+            status, phase, is_ready = await self._sync_batch_status(run_id, sid, status, notes)
 
-        output_resources = self._resolve_output_resources(run.output_resource_ids)
+        output_resources = await self._in_executor(
+            self._resolve_output_resources, run.output_resource_ids
+        )
 
         return RunResponse(
             run_id=run_id,
@@ -336,13 +350,15 @@ class RunService:
             output_resources=output_resources,
         )
 
-    def list_runs(self) -> list[RunResponse]:
+    async def list_runs(self) -> list[RunResponse]:
         """List all runs with mode and output info."""
-        runs = self._dal.list_all_runs()
+        runs = await self._in_executor(self._dal.list_all_runs)
         results = []
         for run in runs:
             notes = self._unpack_notes(run.notes)
-            output_resources = self._resolve_output_resources(run.output_resource_ids)
+            output_resources = await self._in_executor(
+                self._resolve_output_resources, run.output_resource_ids
+            )
             results.append(
                 RunResponse(
                     run_id=run.id,
@@ -355,9 +371,9 @@ class RunService:
             )
         return results
 
-    def delete_run(self, run_id: str) -> bool:
+    async def delete_run(self, run_id: str) -> bool:
         """Cancel a run and delete its K8s resources."""
-        run = self._dal.get_run(run_id)
+        run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             return False
 
@@ -368,16 +384,16 @@ class RunService:
 
         if status in (RunStatus.REGISTERED, RunStatus.RUNNING):
             try:
-                self._dal.cancel(run_id)
+                await self._in_executor(self._dal.cancel, run_id)
             except Exception:
                 logger.warning(f"Failed to cancel run {run_id} in DAL", exc_info=True)
 
         if sid:
             try:
                 if mode == "interactive":
-                    self._appstore.delete_container(sid)
+                    await self._appstore.delete_container(sid)
                 else:
-                    self._appstore.delete_job(sid)
+                    await self._appstore.delete_job(sid)
             except Exception:
                 logger.warning(f"Failed to delete K8s resources for sid={sid}", exc_info=True)
 
@@ -437,7 +453,7 @@ class RunService:
             paths.append((rid, resource.location_uri))
         return paths
 
-    def _sync_batch_status(
+    async def _sync_batch_status(
         self,
         run_id: str,
         sid: str,
@@ -445,7 +461,7 @@ class RunService:
         notes: dict,
     ) -> tuple[RunStatus, str | None, bool | None]:
         """Check live batch Job status via appstore and auto-update DAL."""
-        job_status = self._appstore.job_status(sid)
+        job_status = await self._appstore.job_status(sid)
         if job_status is None:
             return current, None, None
 
@@ -454,13 +470,15 @@ class RunService:
 
         if job_status.status == "succeeded" and current != RunStatus.COMPLETED:
             try:
-                self._complete_run(run_id, notes)
+                await self._in_executor(self._complete_run, run_id, notes)
                 status = RunStatus.COMPLETED
             except Exception:
                 logger.warning(f"Failed to auto-complete run {run_id}", exc_info=True)
         elif job_status.status == "failed" and current != RunStatus.FAILED:
             try:
-                self._dal.mark_failed(run_id, "Job terminated with non-zero exit")
+                await self._in_executor(
+                    self._dal.mark_failed, run_id, "Job terminated with non-zero exit"
+                )
                 status = RunStatus.FAILED
             except Exception:
                 logger.warning(f"Failed to auto-fail run {run_id}", exc_info=True)
@@ -484,6 +502,23 @@ class RunService:
             output_resources.append(output_resource)
 
         self._dal.mark_succeeded(run_id, output_resources=output_resources)
+
+    async def poll_batch_runs(self) -> None:
+        """Called by the background poller — sync all RUNNING batch runs against appstore."""
+        runs = await self._in_executor(self._dal.list_all_runs)
+        for run in runs:
+            notes = self._unpack_notes(run.notes or "")
+            if notes.get("mode") != "batch":
+                continue
+            if RunStatus(run.status.value) != RunStatus.RUNNING:
+                continue
+            sid = notes.get("sid")
+            if not sid:
+                continue
+            try:
+                await self._sync_batch_status(run.id, sid, RunStatus.RUNNING, notes)
+            except Exception:
+                logger.warning(f"Poller: failed to sync run {run.id}", exc_info=True)
 
     def _safe_cancel(self, run_id: str) -> None:
         """Cancel a run, swallowing errors."""

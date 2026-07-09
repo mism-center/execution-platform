@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mism-exec-to-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mism-exec.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: metadata-store
+      app.kubernetes.io/instance: model-discovery
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mism-exec
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mism-exec-to-appstore
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mism-exec.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: appstore
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mism-exec
+      ports:
+        - port: 8000
+          protocol: TCP
