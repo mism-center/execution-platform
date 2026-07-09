@@ -47,7 +47,7 @@ class JobStatus:
 
 
 class AppstoreClient:
-    """HTTP client for appstore orchestration endpoints."""
+    """Async HTTP client for appstore orchestration endpoints."""
 
     def __init__(self, settings: Settings) -> None:
         self._base_url = settings.appstore_url.rstrip("/")
@@ -57,7 +57,7 @@ class AppstoreClient:
     # Interactive sessions (/api/v1/containers/)
     # ------------------------------------------------------------------
 
-    def launch(
+    async def launch(
         self,
         *,
         image: str,
@@ -82,12 +82,13 @@ class AppstoreClient:
         if command:
             payload["command"] = command
 
-        resp = httpx.post(
-            f"{self._base_url}/api/v1/containers/",
-            json=payload,
-            auth=self._auth,
-            timeout=30.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base_url}/api/v1/containers/",
+                json=payload,
+                auth=self._auth,
+                timeout=30.0,
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -98,13 +99,14 @@ class AppstoreClient:
             name=data["name"],
         )
 
-    def delete_container(self, sid: str) -> None:
+    async def delete_container(self, sid: str) -> None:
         """Terminate an interactive session."""
-        resp = httpx.delete(
-            f"{self._base_url}/api/v1/containers/{sid}/",
-            auth=self._auth,
-            timeout=10.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                f"{self._base_url}/api/v1/containers/{sid}/",
+                auth=self._auth,
+                timeout=10.0,
+            )
         if resp.status_code == 404:
             logger.warning(f"Container {sid} not found in appstore")
             return
@@ -115,7 +117,7 @@ class AppstoreClient:
     # Batch Jobs (/api/v1/jobs/)
     # ------------------------------------------------------------------
 
-    def launch_job(
+    async def launch_job(
         self,
         *,
         name: str,
@@ -142,12 +144,13 @@ class AppstoreClient:
         if command:
             payload["command"] = command
 
-        resp = httpx.post(
-            f"{self._base_url}/api/v1/jobs/",
-            json=payload,
-            auth=self._auth,
-            timeout=30.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base_url}/api/v1/jobs/",
+                json=payload,
+                auth=self._auth,
+                timeout=30.0,
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -158,13 +161,14 @@ class AppstoreClient:
             status=data["status"],
         )
 
-    def job_status(self, sid: str) -> JobStatus | None:
+    async def job_status(self, sid: str) -> JobStatus | None:
         """Get status of a batch Job."""
-        resp = httpx.get(
-            f"{self._base_url}/api/v1/jobs/{sid}/",
-            auth=self._auth,
-            timeout=10.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self._base_url}/api/v1/jobs/{sid}/",
+                auth=self._auth,
+                timeout=10.0,
+            )
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -178,13 +182,14 @@ class AppstoreClient:
             exit_code=data.get("exit_code"),
         )
 
-    def delete_job(self, sid: str) -> None:
+    async def delete_job(self, sid: str) -> None:
         """Delete a batch Job."""
-        resp = httpx.delete(
-            f"{self._base_url}/api/v1/jobs/{sid}/",
-            auth=self._auth,
-            timeout=10.0,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                f"{self._base_url}/api/v1/jobs/{sid}/",
+                auth=self._auth,
+                timeout=10.0,
+            )
         if resp.status_code == 404:
             logger.warning(f"Job {sid} not found in appstore")
             return

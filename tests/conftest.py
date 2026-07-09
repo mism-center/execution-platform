@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,17 +35,17 @@ def dal(registry: InMemoryRegistry) -> DALService:
 def mock_appstore() -> AppstoreClient:
     """Mock appstore client that returns fake job results."""
     client = MagicMock(spec=AppstoreClient)
-    client.launch.return_value = InteractiveSession(
+    client.launch = AsyncMock(return_value=InteractiveSession(
         sid="fake-sid", url="/private/fake-container/", name="fake-container"
-    )
-    client.launch_job.return_value = JobResult(
+    ))
+    client.launch_job = AsyncMock(return_value=JobResult(
         sid="fake-sid", name="fake-job", status="running"
-    )
-    client.job_status.return_value = JobStatus(
+    ))
+    client.job_status = AsyncMock(return_value=JobStatus(
         sid="fake-sid", name="fake-job", status="running", phase="running"
-    )
-    client.delete_job.return_value = None
-    client.delete_container.return_value = None
+    ))
+    client.delete_job = AsyncMock(return_value=None)
+    client.delete_container = AsyncMock(return_value=None)
     return client
 
 

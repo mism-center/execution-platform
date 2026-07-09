@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,14 +15,42 @@ from core.errors import register_error_handlers
 from core.logging import configure_logging
 from core.settings import get_settings
 from middleware.request_context import RequestContextMiddleware
+from services.run_service import RunService
+
+logger = logging.getLogger(__name__)
+
+_POLL_INTERVAL_SECONDS = 15
+
+
+async def _poll_loop(service: RunService) -> None:
+    logger.info(f"Batch run poller started (interval={_POLL_INTERVAL_SECONDS}s)")
+    while True:
+        try:
+            await service.poll_batch_runs()
+        except Exception:
+            logger.warning("Poll loop: unhandled error during poll", exc_info=True)
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup / shutdown hook for resource management."""
-    # Startup — nothing to initialise for now; add K8s client cleanup here later.
+    settings = get_settings()
+    poll_task: asyncio.Task | None = None
+
+    if settings.database_url:
+        from dependencies import get_run_service
+        poll_task = asyncio.create_task(_poll_loop(get_run_service()))
+
     yield
-    # Shutdown — clear cached singletons so tests stay isolated.
+
+    if poll_task is not None:
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            logger.info("Batch run poller stopped")
+
+    # Clear cached singletons so tests stay isolated.
     from dependencies import _create_appstore, _create_dal
 
     _create_appstore.cache_clear()
