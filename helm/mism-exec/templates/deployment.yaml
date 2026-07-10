@@ -59,10 +59,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.llm.existingSecret }}
                   key: {{ .Values.llm.secretKey }}
-            {{- if .Values.llm.baseUrl }}
-            - name: LLM_BASE_URL
-              value: {{ .Values.llm.baseUrl | quote }}
-            {{- end }}
+            - name: LLM_API_KEY_ENV_NAME
+              value: {{ .Values.llm.apiKeyEnvName | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- if .Values.storage.mountIrodsPvc }}

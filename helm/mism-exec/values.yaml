@@ -71,7 +71,7 @@ appstore:
 llm:
   existingSecret: llm-credentials
   secretKey: api_key
-  baseUrl: ""  # set to Azure OpenAI base URL if using Azure, leave empty for Anthropic
+  apiKeyEnvName: "LLM_API_KEY"
 
 securityContext:
   runAsUser: 995

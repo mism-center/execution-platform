@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # --- LLM (annotation agent) ---
     llm_api_key: str = ""
-    llm_base_url: str | None = None
+    llm_api_key_env_name: str = "AZURE_OPENAI_API_KEY"
 
     model_config = {
         "env_file": ".env",

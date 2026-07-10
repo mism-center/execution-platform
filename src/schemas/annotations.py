@@ -14,6 +14,9 @@ class AnnotateRequest(BaseModel):
     )
     image: str = Field(..., description="Annotator container image")
     prompt: str = Field(..., description="Annotation prompt passed to the agent")
+    extra_env: dict[str, str] | None = Field(
+        None, description="Additional environment variables passed to the annotation pod"
+    )
     cpus: str = Field("1", description="CPU request for the annotation pod")
     memory: str = Field("4Gi", description="Memory request for the annotation pod")
 
