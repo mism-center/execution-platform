@@ -75,11 +75,13 @@ class AnnotationService:
             "read_only": False,
         }]
 
-        env = {
+        env: dict[str, str] = {
             "MODEL_INPUT": "/workspace",
             "PROMPT": request.prompt,
-            "ANTHROPIC_API_KEY": request.anthropic_api_key,
+            "LLM_API_KEY": request.api_key,
         }
+        if request.base_url is not None:
+            env["LLM_BASE_URL"] = request.base_url
 
         try:
             result = await self._appstore.launch_job(
