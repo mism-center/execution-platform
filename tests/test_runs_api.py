@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from mism_registry import RunStatus
 
 from services.dal_service import DALService
-from tests.conftest import create_test_run
+from tests.conftest import approve_resource, create_test_run
 
 
 class TestCreateRun:
@@ -38,6 +38,7 @@ class TestCreateRun:
             location_uri="irods:///mism/models/no-image",
             execution_ref="",
         )
+        approve_resource(dal, model.id)
         run = dal.create_run(model_id=model.id)
         resp = client.post("/api/v1/runs", json={"run_id": run.id})
         assert resp.status_code == 400
