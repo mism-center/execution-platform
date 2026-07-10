@@ -54,6 +54,15 @@ spec:
                   key: {{ .Values.appstore.secretKey }}
             - name: AMBASSADOR_URL
               value: {{ .Values.appstore.ambassadorUrl | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.llm.existingSecret }}
+                  key: {{ .Values.llm.secretKey }}
+            {{- if .Values.llm.baseUrl }}
+            - name: LLM_BASE_URL
+              value: {{ .Values.llm.baseUrl | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- if .Values.storage.mountIrodsPvc }}

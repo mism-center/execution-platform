@@ -14,10 +14,6 @@ class AnnotateRequest(BaseModel):
     )
     image: str = Field(..., description="Annotator container image")
     prompt: str = Field(..., description="Annotation prompt passed to the agent")
-    api_key: str = Field(..., description="LLM API key passed to the annotation agent")
-    base_url: str | None = Field(
-        None, description="LLM base URL (required for Azure OpenAI, omit for Anthropic)"
-    )
     cpus: str = Field("1", description="CPU request for the annotation pod")
     memory: str = Field("4Gi", description="Memory request for the annotation pod")
 

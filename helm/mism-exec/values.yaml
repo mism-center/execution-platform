@@ -67,5 +67,11 @@ appstore:
   secretKey: APPSTORE_DJANGO_PASSWORD
   ambassadorUrl: https://mism-apps.apps.renci.org
 
+# --- LLM (annotation agent) ---
+llm:
+  existingSecret: llm-credentials
+  secretKey: api_key
+  baseUrl: ""  # set to Azure OpenAI base URL if using Azure, leave empty for Anthropic
+
 securityContext:
   runAsUser: 995

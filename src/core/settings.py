@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     appstore_password: str = "admin"
     ambassador_url: str = "https://mism-apps.apps.renci.org"
 
+    # --- LLM (annotation agent) ---
+    llm_api_key: str = ""
+    llm_base_url: str | None = None
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

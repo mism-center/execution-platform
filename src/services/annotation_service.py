@@ -78,10 +78,10 @@ class AnnotationService:
         env: dict[str, str] = {
             "MODEL_INPUT": "/workspace",
             "PROMPT": request.prompt,
-            "LLM_API_KEY": request.api_key,
+            "LLM_API_KEY": self._settings.llm_api_key,
         }
-        if request.base_url is not None:
-            env["LLM_BASE_URL"] = request.base_url
+        if self._settings.llm_base_url is not None:
+            env["LLM_BASE_URL"] = self._settings.llm_base_url
 
         try:
             result = await self._appstore.launch_job(
