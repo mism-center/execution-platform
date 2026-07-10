@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import Annotated
+
 from fastapi import APIRouter, Depends
+
 from core.errors import OrchestrationError, ValidationError
 from dependencies import get_annotation_service
 from schemas.annotations import AnnotateRequest, AnnotateResponse
