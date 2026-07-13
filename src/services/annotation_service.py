@@ -88,6 +88,7 @@ class AnnotationService:
                 cpus=request.cpus,
                 memory=request.memory,
                 env=env,
+                command=request.command,
                 pvc_mounts=pvc_mounts,
             )
         except Exception as e:

@@ -17,6 +17,9 @@ class AnnotateRequest(BaseModel):
     extra_env: dict[str, str] | None = Field(
         None, description="Additional environment variables passed to the annotation pod"
     )
+    command: list[str] | None = Field(
+        None, description="Override the container entrypoint (e.g. ['pi', '--stream=all', ...])"
+    )
     cpus: str = Field("1", description="CPU request for the annotation pod")
     memory: str = Field("4Gi", description="Memory request for the annotation pod")
 
