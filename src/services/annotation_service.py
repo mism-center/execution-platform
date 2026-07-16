@@ -46,16 +46,24 @@ class AnnotationService:
         if resource is None:
             raise ValueError(f"Resource {request.resource_id} not found")
 
-        allowed = {ResourceRegistrationStatus.DRAFT, ResourceRegistrationStatus.ANNOTATION_FAILED}
+        allowed = {
+            ResourceRegistrationStatus.DRAFT,
+            ResourceRegistrationStatus.ANNOTATION_FAILED,
+            ResourceRegistrationStatus.PENDING_REVIEW,
+        }
         if resource.registration_status not in allowed:
             raise ValueError(
                 f"Resource {request.resource_id} cannot be annotated from "
                 f"status={resource.registration_status.value}"
             )
 
-        # On retry, the previous failed K8s Job still exists and would cause a
-        # 409 conflict. Delete it first — ignore 404 if already cleaned up.
-        if resource.registration_status == ResourceRegistrationStatus.ANNOTATION_FAILED:
+        # On retry or re-annotation from pending_review, the previous K8s Job
+        # still exists and would cause a 409 conflict on re-launch.
+        # Delete it first — ignore 404 if already cleaned up.
+        if resource.registration_status in {
+            ResourceRegistrationStatus.ANNOTATION_FAILED,
+            ResourceRegistrationStatus.PENDING_REVIEW,
+        }:
             try:
                 await self._appstore.delete_job(request.resource_id)
                 logger.info(
