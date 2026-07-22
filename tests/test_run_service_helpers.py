@@ -140,3 +140,61 @@ class TestRenderBatchCommand:
         )
         cmd = RunService._render_batch_command(entrypoint, {})
         assert cmd[2] == "cmd value"
+
+    def test_cwd_var_prefixes_cd(self) -> None:
+        # When the model has files mounted at /app, we prefix the command
+        # with `cd "$MODEL_PATH" &&` so relative paths resolve from /app.
+        entrypoint = EntryPoint(command="python chemotaxis/foo.py")
+        cmd = RunService._render_batch_command(
+            entrypoint, {}, cwd_var="MODEL_PATH"
+        )
+        assert cmd[2] == 'cd "$MODEL_PATH" && python chemotaxis/foo.py'
+
+    def test_cwd_var_none_skips_cd_prefix(self) -> None:
+        # Models without a location_uri (no iRODS files) skip the cd prefix.
+        entrypoint = EntryPoint(command="run.sh")
+        cmd = RunService._render_batch_command(entrypoint, {}, cwd_var=None)
+        assert cmd[2] == "run.sh"
+
+
+class TestBuildPvcMounts:
+    """`_build_pvc_mounts` — model files mounted at /app when location_uri set."""
+
+    def _svc(self):
+        # _build_pvc_mounts is an instance method that only reads self via
+        # unused attributes here; a bare RunService with mock deps is fine.
+        from unittest.mock import MagicMock
+
+        return RunService(dal=MagicMock(), appstore=MagicMock(), settings=MagicMock())
+
+    def test_model_mount_appended_when_location_uri_present(self) -> None:
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out-uuid/v1",
+            pvc="irods-pvc",
+            model_location_uri="vivarium-test-A/1.0.0",
+        )
+        # Should be: [output, model]
+        model_mount = next(m for m in mounts if m["mount_path"] == "/app")
+        assert model_mount["sub_path"] == "vivarium-test-A/1.0.0"
+        assert model_mount["read_only"] is False
+        assert model_mount["pvc"] == "irods-pvc"
+
+    def test_model_mount_omitted_when_location_uri_none(self) -> None:
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out-uuid/v1",
+            pvc="irods-pvc",
+            model_location_uri=None,
+        )
+        assert not any(m["mount_path"] == "/app" for m in mounts)
+
+    def test_leading_slash_stripped_from_sub_path(self) -> None:
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out/v1",
+            pvc="irods-pvc",
+            model_location_uri="/leading/slash",
+        )
+        model_mount = next(m for m in mounts if m["mount_path"] == "/app")
+        assert model_mount["sub_path"] == "leading/slash"

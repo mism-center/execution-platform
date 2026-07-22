@@ -152,7 +152,11 @@ class RunService:
         return cpus, memory
 
     @staticmethod
-    def _render_batch_command(entrypoint: EntryPoint | None, parameters: dict) -> list[str]:
+    def _render_batch_command(
+        entrypoint: EntryPoint | None,
+        parameters: dict,
+        cwd_var: str | None = None,
+    ) -> list[str]:
         """Render the Run's entrypoint into a K8s container command list.
 
         EntryPoint.to_cli() produces a shell-quoted string (positional args
@@ -160,6 +164,10 @@ class RunService:
         shlex.quote'd). We wrap it in `sh -c` so the container gets a shell
         that respects that quoting and any operators (>, |) the annotator
         embedded in EntryPoint.command.
+
+        If ``cwd_var`` is set, prefix the command with ``cd "$<cwd_var>" &&``
+        so the entrypoint runs from the model-files mount (relative paths
+        like ``python chemotaxis/foo.py`` resolve as they would locally).
         """
         if entrypoint is None:
             raise ValueError(
@@ -167,6 +175,8 @@ class RunService:
                 "entrypoint_index before the exec platform can launch"
             )
         rendered = entrypoint.to_cli(values=parameters or {})
+        if cwd_var:
+            rendered = f'cd "${cwd_var}" && {rendered}'
         return ["sh", "-c", rendered]
 
     # ------------------------------------------------------------------
@@ -189,8 +199,14 @@ class RunService:
             raise ValueError(f"Model {run.model_id} not found in DAL")
 
         image = self._require_image(run)
-        command = self._render_batch_command(run.entrypoint, run.parameters)
         cpus, memory = self._resolve_compute(model.compute)
+
+        # Only mount /app + cd into it if the model actually has files on iRODS.
+        # Models registered without a location_uri (unit fixtures, pre-import
+        # rows) fall back to the image's baked contents.
+        has_model_files = bool(model.location_uri)
+        cwd_var = "MODEL_PATH" if has_model_files else None
+        command = self._render_batch_command(run.entrypoint, run.parameters, cwd_var=cwd_var)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
@@ -201,7 +217,10 @@ class RunService:
         sid = uuid.uuid4().hex
         pvc = self._settings.irods_pvc_name
 
-        pvc_mounts = self._build_pvc_mounts(input_paths, output_uri, pvc)
+        pvc_mounts = self._build_pvc_mounts(
+            input_paths, output_uri, pvc,
+            model_location_uri=model.location_uri if has_model_files else None,
+        )
 
         env = {
             "MODEL_ID": model.id,
@@ -209,6 +228,9 @@ class RunService:
             "INPUT_PATH": "/input",
             "OUTPUT_PATH": "/output",
         }
+        if has_model_files:
+            env["MODEL_PATH"] = "/app"
+            env["PYTHONPATH"] = "/app"
 
         try:
             result = await self._appstore.launch_job(
@@ -273,9 +295,11 @@ class RunService:
         output_resource_id, output_uri = self._generate_output_resource()
 
         pvc = self._settings.irods_pvc_name
+        has_model_files = bool(model.location_uri)
         pvc_mounts = self._build_pvc_mounts(
             input_paths, output_uri, pvc,
             input_prefix="/data/input", output_mount="/data/output",
+            model_location_uri=model.location_uri if has_model_files else None,
         )
 
         env = {
@@ -284,6 +308,9 @@ class RunService:
             "JUPYTER_TOKEN": jupyter_token,
             "OUTPUT_PATH": "/data/output",
         }
+        if has_model_files:
+            env["MODEL_PATH"] = "/app"
+            env["PYTHONPATH"] = "/app"
 
         session = await self._appstore.launch(
             image=image,
@@ -458,8 +485,19 @@ class RunService:
         pvc: str,
         input_prefix: str = "/input",
         output_mount: str = "/output",
+        model_location_uri: str | None = None,
+        model_mount: str = "/app",
     ) -> list[dict]:
-        """Build PVC mount dicts for the appstore API."""
+        """Build PVC mount dicts for the appstore API.
+
+        Model files (whatever landed on iRODS via github-import or direct
+        upload) mount at ``model_mount`` (default ``/app``) writable, so
+        scripts that emit artifacts next to their source (matching local
+        ``docker run -v $repo:/app`` semantics) keep working. Runs polluting
+        the model dir is a known trade-off — the "correct" fix routes writes
+        to ``$OUTPUT_PATH``, but forcing that on every model breaks parity
+        with how developers run these locally.
+        """
         mounts = []
         for i, (_rid, uri) in enumerate(input_paths):
             mount_path = f"{input_prefix}/{i}" if len(input_paths) > 1 else input_prefix
@@ -475,6 +513,13 @@ class RunService:
             "sub_path": output_uri.strip("/"),
             "read_only": False,
         })
+        if model_location_uri:
+            mounts.append({
+                "pvc": pvc,
+                "mount_path": model_mount,
+                "sub_path": model_location_uri.strip("/"),
+                "read_only": False,
+            })
         return mounts
 
     def _resolve_output_resources(self, resource_ids: list[str]) -> list[OutputResource]:
