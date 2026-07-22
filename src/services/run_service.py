@@ -487,6 +487,7 @@ class RunService:
         output_mount: str = "/output",
         model_location_uri: str | None = None,
         model_mount: str = "/app",
+        overlay_output_at_model_out: bool = True,
     ) -> list[dict]:
         """Build PVC mount dicts for the appstore API.
 
@@ -497,6 +498,16 @@ class RunService:
         the model dir is a known trade-off — the "correct" fix routes writes
         to ``$OUTPUT_PATH``, but forcing that on every model breaks parity
         with how developers run these locally.
+
+        When ``overlay_output_at_model_out`` is true (default) and a model
+        mount is added, the SAME output sub_path is also mounted at
+        ``<model_mount>/out``. Scripts that write to relative ``out/…``
+        (a common Python convention, and what the annotator emits under
+        ``default_output_location``) land in the output resource instead of
+        polluting the model dir. Not a full fix for TD-006 — writes to any
+        other path inside ``/app`` still leak — but catches the common
+        ``out/`` case. Hardcoding the ``out`` name is TD-007 territory;
+        the per-entrypoint hint should drive this once the schema catches up.
         """
         mounts = []
         for i, (_rid, uri) in enumerate(input_paths):
@@ -507,10 +518,11 @@ class RunService:
                 "sub_path": uri.strip("/"),
                 "read_only": True,
             })
+        output_sub_path = output_uri.strip("/")
         mounts.append({
             "pvc": pvc,
             "mount_path": output_mount,
-            "sub_path": output_uri.strip("/"),
+            "sub_path": output_sub_path,
             "read_only": False,
         })
         if model_location_uri:
@@ -520,6 +532,13 @@ class RunService:
                 "sub_path": model_location_uri.strip("/"),
                 "read_only": False,
             })
+            if overlay_output_at_model_out:
+                mounts.append({
+                    "pvc": pvc,
+                    "mount_path": f"{model_mount}/out",
+                    "sub_path": output_sub_path,
+                    "read_only": False,
+                })
         return mounts
 
     def _resolve_output_resources(self, resource_ids: list[str]) -> list[OutputResource]:

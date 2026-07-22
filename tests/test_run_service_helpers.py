@@ -198,3 +198,39 @@ class TestBuildPvcMounts:
         )
         model_mount = next(m for m in mounts if m["mount_path"] == "/app")
         assert model_mount["sub_path"] == "leading/slash"
+
+    def test_overlay_mounts_output_at_app_out(self) -> None:
+        # /app/out and /output should share the same sub_path so scripts
+        # writing to relative "out/" land in the output resource.
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out-uuid/v1",
+            pvc="irods-pvc",
+            model_location_uri="model-uuid/1.0.0",
+        )
+        overlay = next(m for m in mounts if m["mount_path"] == "/app/out")
+        output = next(m for m in mounts if m["mount_path"] == "/output")
+        assert overlay["sub_path"] == output["sub_path"] == "out-uuid/v1"
+        assert overlay["read_only"] is False
+
+    def test_overlay_skipped_when_no_model_mount(self) -> None:
+        # No model files → no overlay (no /app to nest under).
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out-uuid/v1",
+            pvc="irods-pvc",
+            model_location_uri=None,
+        )
+        assert not any(m["mount_path"] == "/app/out" for m in mounts)
+
+    def test_overlay_opt_out(self) -> None:
+        # Caller can disable the overlay when they want /app/out to remain
+        # a plain (writable) subdirectory of the model dir on iRODS.
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[],
+            output_uri="out-uuid/v1",
+            pvc="irods-pvc",
+            model_location_uri="model-uuid/1.0.0",
+            overlay_output_at_model_out=False,
+        )
+        assert not any(m["mount_path"] == "/app/out" for m in mounts)
