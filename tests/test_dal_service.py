@@ -5,6 +5,7 @@ from __future__ import annotations
 from mism_registry import ExecutionType, RunStatus
 
 from services.dal_service import DALService
+from tests.conftest import approve_resource
 
 
 class TestDALService:
@@ -47,6 +48,7 @@ class TestDALService:
             location_uri="irods:///mism/models/test",
             execution_ref="docker.io/org/model:v1",
         )
+        approve_resource(dal, model.id)
         run = dal.create_run(model_id=model.id, notes="sid-123")
         assert run.id
         assert run.status == RunStatus.REGISTERED
@@ -64,6 +66,7 @@ class TestDALService:
             location_uri="irods:///mism/models/fail",
             execution_ref="docker.io/org/fail:v1",
         )
+        approve_resource(dal, model.id)
         run = dal.create_run(model_id=model.id)
         run = dal.mark_running(run.id)
         run = dal.mark_failed(run.id, "OOM killed")
@@ -76,6 +79,7 @@ class TestDALService:
             location_uri="irods:///mism/models/cancel",
             execution_ref="docker.io/org/cancel:v1",
         )
+        approve_resource(dal, model.id)
         run = dal.create_run(model_id=model.id)
         run = dal.cancel(run.id)
         assert run.status == RunStatus.CANCELLED
@@ -89,6 +93,7 @@ class TestDALService:
             location_uri="irods:///mism/models/multi",
             execution_ref="docker.io/org/multi:v1",
         )
+        approve_resource(dal, model.id)
         dal.create_run(model_id=model.id)
         dal.create_run(model_id=model.id)
         runs = dal.find_runs_for_model(model.id)

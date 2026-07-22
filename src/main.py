@@ -3,52 +3,57 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.v1 import runs
+from api.v1 import annotations, runs
 from core.errors import register_error_handlers
 from core.logging import configure_logging
 from core.settings import get_settings
 from middleware.request_context import RequestContextMiddleware
-from services.run_service import RunService
 
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 15
 
 
-async def _poll_loop(service: RunService) -> None:
-    logger.info(f"Batch run poller started (interval={_POLL_INTERVAL_SECONDS}s)")
+async def _poll_loop(name: str, poll_fn: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    logger.info(f"{name} poller started (interval={_POLL_INTERVAL_SECONDS}s)")
     while True:
         try:
-            await service.poll_batch_runs()
+            await poll_fn()
         except Exception:
-            logger.warning("Poll loop: unhandled error during poll", exc_info=True)
+            logger.warning(f"{name} poll loop: unhandled error", exc_info=True)
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings = get_settings()
-    poll_task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
 
-    if settings.database_url:
-        from dependencies import get_run_service
-        poll_task = asyncio.create_task(_poll_loop(get_run_service()))
+    if get_settings().database_url:
+        from dependencies import get_annotation_service, get_run_service
+        tasks.append(asyncio.create_task(
+            _poll_loop("batch run", get_run_service().poll_batch_runs)
+        ))
+        tasks.append(asyncio.create_task(
+            _poll_loop("annotation", get_annotation_service().poll_annotating_resources)
+        ))
 
     yield
 
-    if poll_task is not None:
-        poll_task.cancel()
-        try:
-            await poll_task
-        except asyncio.CancelledError:
-            logger.info("Batch run poller stopped")
+    for task in tasks:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    if tasks:
+        logger.info("All pollers stopped")
 
     # Clear cached singletons so tests stay isolated.
     from dependencies import _create_appstore, _create_dal
@@ -83,6 +88,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(runs.router, prefix="/api/v1")
+    app.include_router(annotations.router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, str]:

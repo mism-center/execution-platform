@@ -17,6 +17,8 @@ from services.run_service import RunService
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
+_PLACEHOLDER_NAMES: frozenset[str] = frozenset({".gitignore", ".gitkeep", ".keep"})
+
 
 @router.post("", response_model=RunResponse, status_code=201)
 async def create_run(
@@ -84,7 +86,7 @@ async def list_run_files(
 
     files = []
     for entry in output_dir.iterdir():
-        if entry.is_file():
+        if entry.is_file() and entry.name not in _PLACEHOLDER_NAMES:
             stat = entry.stat()
             files.append(FileInfo(
                 name=entry.name,

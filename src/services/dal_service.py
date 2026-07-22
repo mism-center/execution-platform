@@ -20,14 +20,17 @@ from mism_registry import (
     ExecutionType,
     InMemoryRegistry,
     Resource,
+    ResourceRegistrationStatus,
     ResourceType,
     Run,
     cancel_run,
     complete_run,
     fail_run,
+    find_resources,
     find_runs,
     prepare_run,
     register_model,
+    set_registration_status,
     start_run,
 )
 from mism_registry.errors import ResourceNotFoundError, RunNotFoundError
@@ -180,6 +183,26 @@ class DALService:
                 execution_ref=execution_ref,
                 metadata=metadata or {},
             )
+
+    def list_resources_by_registration_status(
+        self, status: ResourceRegistrationStatus
+    ) -> list[Resource]:
+        with self._session_scope() as reg:
+            return [r for r in find_resources(reg) if r.registration_status == status]
+
+    def set_resource_registration_status(
+        self, resource_id: str, target: ResourceRegistrationStatus
+    ) -> Resource:
+        with self._session_scope() as reg:
+            resource = set_registration_status(reg, resource_id=resource_id, target=target)
+            logger.info(f"Resource {resource_id} → {target.value}")
+            return resource
+
+    def update_resource_metadata(self, resource_id: str, patch: dict) -> Resource:
+        with self._session_scope() as reg:
+            resource = reg.get_resource(resource_id)
+            resource.metadata = {**resource.metadata, **patch}
+            return reg.update_resource(resource)
 
     def create_run(
         self,
