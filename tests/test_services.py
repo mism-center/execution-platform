@@ -49,13 +49,16 @@ class TestRunService:
         assert await run_service.delete_run(run_id) is True
         assert await run_service.delete_run("nonexistent") is False
 
-    async def test_uses_model_resource_requirements(
-        self, run_service: RunService, dal: DALService
+    async def test_uses_model_compute(
+        self, run_service: RunService, dal: DALService, mock_appstore
     ) -> None:
-        """Verify that resource requirements from model.metadata are used."""
+        """Compute on the Resource maps to launch_job's cpus/memory args."""
         run_id = create_test_run(dal)
-        result = await run_service.create_run(run_id)
-        assert result.run_id == run_id
+        await run_service.create_run(run_id)
+        launch_call = mock_appstore.launch_job.await_args
+        # create_test_run stamps Compute(cpu_cores=2, memory_gb=4.0) on the model
+        assert launch_call.kwargs["cpus"] == "2"
+        assert launch_call.kwargs["memory"] == "4.0Gi"
 
 
 # from services.appstore_client import JobStatus

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from mism_registry import Resource, ResourceType, RunStatus
+from mism_registry.types import Compute, EntryPoint
 
 from core.settings import Settings
 from schemas.runs import OutputResource, RunResponse
@@ -120,11 +121,65 @@ class RunService:
         return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
     # ------------------------------------------------------------------
+    # Run-schema helpers (entrypoint / container / compute → launch args)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _require_image(run) -> str:
+        """Pull the container image off the Run snapshot; hard-error if missing."""
+        if run.container is None or not run.container.image_name:
+            raise ValueError(
+                f"Run {run.id} has no container.image_name — model must ship a "
+                "Container recipe with image_name set for the exec platform to launch it"
+            )
+        return run.container.image_name
+
+    @staticmethod
+    def _resolve_compute(compute: Compute | None) -> tuple[str, str]:
+        """Map a model's Compute to the (cpus, memory) strings the appstore wants.
+
+        Falls back to DEFAULT_RESOURCE_REQUIREMENTS for missing fields.
+        memory_gb is emitted as a Ki-style suffix (e.g. 2.0 → "2.0Gi").
+        Compute is not snapshotted onto the Run today (see TECH_DEBT TD-005),
+        so callers pass model.compute at execution time.
+        """
+        default_cpus = DEFAULT_RESOURCE_REQUIREMENTS["cpus"]
+        default_memory = DEFAULT_RESOURCE_REQUIREMENTS["memory"]
+        if compute is None:
+            return default_cpus, default_memory
+        cpus = str(compute.cpu_cores) if compute.cpu_cores is not None else default_cpus
+        memory = f"{compute.memory_gb}Gi" if compute.memory_gb is not None else default_memory
+        return cpus, memory
+
+    @staticmethod
+    def _render_batch_command(entrypoint: EntryPoint | None, parameters: dict) -> list[str]:
+        """Render the Run's entrypoint into a K8s container command list.
+
+        EntryPoint.to_cli() produces a shell-quoted string (positional args
+        first, then options; bool args become presence flags; every value is
+        shlex.quote'd). We wrap it in `sh -c` so the container gets a shell
+        that respects that quoting and any operators (>, |) the annotator
+        embedded in EntryPoint.command.
+        """
+        if entrypoint is None:
+            raise ValueError(
+                "Run has no entrypoint — Discovery must call prepare_run with an "
+                "entrypoint_index before the exec platform can launch"
+            )
+        rendered = entrypoint.to_cli(values=parameters or {})
+        return ["sh", "-c", rendered]
+
+    # ------------------------------------------------------------------
     # Batch execution (via appstore /api/v1/jobs/)
     # ------------------------------------------------------------------
 
     async def create_run(self, run_id: str) -> RunResult:
-        """Execute a pre-created Run as a headless batch Job."""
+        """Execute a pre-created Run as a headless batch Job.
+
+        Image and command come from the Run snapshot (container.image_name,
+        entrypoint) that prepare_run stamped on. Compute still reads from the
+        model since Run doesn't carry it yet (TECH_DEBT TD-005).
+        """
         run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found in DAL")
@@ -132,20 +187,14 @@ class RunService:
         model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
-        if not model.execution_ref:
-            raise ValueError(
-                f"Model {run.model_id} has no execution_ref (container image)"
-            )
+
+        image = self._require_image(run)
+        command = self._render_batch_command(run.entrypoint, run.parameters)
+        cpus, memory = self._resolve_compute(model.compute)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
         )
-
-        resource_reqs = model.metadata.get(
-            "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
-        )
-        cpus = resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"])
-        memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
         output_resource_id, output_uri = self._generate_output_resource()
 
@@ -160,13 +209,12 @@ class RunService:
             "INPUT_PATH": "/input",
             "OUTPUT_PATH": "/output",
         }
-        command = model.metadata.get("command")
 
         try:
             result = await self._appstore.launch_job(
                 name=f"mism-{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
                 identifier=sid,
-                image=model.execution_ref,
+                image=image,
                 cpus=cpus,
                 memory=memory,
                 env=env,
@@ -197,7 +245,13 @@ class RunService:
     # ------------------------------------------------------------------
 
     async def create_interactive(self, run_id: str) -> InteractiveResult:
-        """Launch an interactive session for a Run via the appstore."""
+        """Launch an interactive session for a Run via the appstore.
+
+        Image comes from the Run snapshot (container.image_name); compute
+        reads from model.compute. Interactive sessions run the image's default
+        entrypoint (typically a Jupyter server), so run.entrypoint is not
+        consulted here.
+        """
         jupyter_token = secrets.token_urlsafe(32)
 
         run = await self._in_executor(self._dal.get_run, run_id)
@@ -207,20 +261,14 @@ class RunService:
         model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
-        if not model.execution_ref:
-            raise ValueError(
-                f"Model {run.model_id} has no execution_ref (container image)"
-            )
+
+        image = self._require_image(run)
+        cpus_str, memory = self._resolve_compute(model.compute)
+        cpus = float(cpus_str)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
         )
-
-        resource_reqs = model.metadata.get(
-            "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
-        )
-        cpus = float(resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"]))
-        memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
         output_resource_id, output_uri = self._generate_output_resource()
 
@@ -238,7 +286,7 @@ class RunService:
         }
 
         session = await self._appstore.launch(
-            image=model.execution_ref,
+            image=image,
             name=f"{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
             cpus=cpus,
             memory=memory,

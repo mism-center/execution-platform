@@ -35,6 +35,7 @@ from mism_registry import (
 )
 from mism_registry.errors import ResourceNotFoundError, RunNotFoundError
 from mism_registry.protocol import Registry
+from mism_registry.types import Compute, Container, EntryPoint
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
@@ -171,18 +172,31 @@ class DALService:
         execution_type: ExecutionType = ExecutionType.DOCKER,
         execution_ref: str = "",
         metadata: dict | None = None,
+        containers: list[Container] | None = None,
+        entry_points: list[EntryPoint] | None = None,
+        compute: Compute | None = None,
     ) -> Resource:
         """Register a model resource. Used for test setup — in production,
-        the Discovery Gateway handles registration."""
+        the Discovery Gateway handles registration.
+
+        ``compute`` isn't part of ``register_model``'s upstream signature yet,
+        so we stamp it on with a follow-up ``update_resource`` when provided.
+        """
         with self._session_scope() as reg:
-            return register_model(
+            resource = register_model(
                 reg,
                 name=name,
                 location_uri=location_uri,
                 execution_type=execution_type,
                 execution_ref=execution_ref,
                 metadata=metadata or {},
+                containers=containers or [],
+                entry_points=entry_points or [],
             )
+            if compute is not None:
+                resource.compute = compute
+                resource = reg.update_resource(resource)
+            return resource
 
     def list_resources_by_registration_status(
         self, status: ResourceRegistrationStatus
@@ -211,9 +225,16 @@ class DALService:
         input_resource_ids: list[str] | None = None,
         triggered_by: str = "api",
         notes: str = "",
+        entrypoint_index: int | None = None,
+        arguments: dict | None = None,
     ) -> Run:
         """Create a Run record. Used for test setup — in production,
-        the Discovery Gateway calls prepare_run."""
+        the Discovery Gateway calls prepare_run.
+
+        ``entrypoint_index`` selects one of the model's entry_points and
+        stamps a denormalized copy onto the Run. ``arguments`` are values
+        keyed by declared argument names and validated by prepare_run.
+        """
         with self._session_scope() as reg:
             run = prepare_run(
                 reg,
@@ -221,6 +242,8 @@ class DALService:
                 input_resource_ids=input_resource_ids or [],
                 triggered_by=triggered_by,
                 notes=notes,
+                entrypoint_index=entrypoint_index,
+                arguments=arguments,
             )
             logger.info(f"Run created: {run.id} for model={model_id}")
             return run
