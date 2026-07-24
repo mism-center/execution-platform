@@ -135,6 +135,23 @@ class TestRenderBatchCommand:
         cmd = RunService._render_batch_command(entrypoint, {"--quiet": False})
         assert cmd[2] == "tool"
 
+    def test_bool_option_coerces_string_forms(self) -> None:
+        # Real-world footgun: JSON `"false"` (string) is a non-empty Python
+        # str and therefore truthy. We coerce common string forms before the
+        # truthiness check so string "false" doesn't emit the flag.
+        entrypoint = EntryPoint(
+            command="tool",
+            arguments=(Argument(name="--topology", data_type="bool", default=False),),
+        )
+        # String falsy forms → skipped
+        for falsy in ("false", "False", "FALSE", "0", "no", "off", ""):
+            cmd = RunService._render_batch_command(entrypoint, {"--topology": falsy})
+            assert cmd[2] == "tool", f"expected no --topology for {falsy!r}"
+        # String truthy forms → emitted
+        for truthy in ("true", "True", "1", "yes", "on"):
+            cmd = RunService._render_batch_command(entrypoint, {"--topology": truthy})
+            assert cmd[2] == "tool --topology", f"expected --topology for {truthy!r}"
+
     def test_shell_metacharacters_quoted(self) -> None:
         # Injection defense: user-supplied values must be shell-quoted so a
         # value like "; rm -rf /" cannot escape the argument context.

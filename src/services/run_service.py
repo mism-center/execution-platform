@@ -212,6 +212,13 @@ class RunService:
                 continue
             val = parameters[arg.name]
             if arg.data_type == "bool":
+                # Coerce string-form booleans before evaluating truthiness.
+                # Python's `bool("false")` is True (non-empty string), which
+                # is a classic argparse gotcha. Match common CLI conventions:
+                # "true"/"1"/"yes"/"on" (case-insensitive) → True; anything
+                # else stringy → False. Native Python True/False untouched.
+                if isinstance(val, str):
+                    val = val.strip().lower() in ("true", "1", "yes", "on")
                 if val:  # presence flag: emit token only when truthy
                     parts.append(arg.name)
             elif val is not None:  # valued option: token + value
