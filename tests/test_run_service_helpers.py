@@ -94,15 +94,31 @@ class TestRenderBatchCommand:
         cmd = RunService._render_batch_command(entrypoint, {"notebook": "bar.ipynb"})
         assert cmd[2] == "jupyter nbconvert bar.ipynb"
 
-    def test_option_flag_with_value(self) -> None:
+    def test_option_flag_with_user_value(self) -> None:
+        # Valued option: emitted only when the caller explicitly supplied it.
+        entrypoint = EntryPoint(
+            command="tool",
+            arguments=(Argument(name="--out", data_type="path", default="/output"),),
+        )
+        cmd = RunService._render_batch_command(entrypoint, {"--out": "/tmp/x"})
+        assert cmd[2] == "tool --out /tmp/x"
+
+    def test_option_default_not_emitted_without_user_override(self) -> None:
+        # Argparse-native semantics: if the caller didn't pass --out, we don't
+        # bake the default into argv. The script's own argparse fills it in.
+        # This is the fix for TD-009 — enables vivarium-chemotaxis composites
+        # that gate on len(sys.argv) == 1.
         entrypoint = EntryPoint(
             command="tool",
             arguments=(Argument(name="--out", data_type="path", default="/output"),),
         )
         cmd = RunService._render_batch_command(entrypoint, {})
-        assert cmd[2] == "tool --out /output"
+        assert cmd[2] == "tool"
 
-    def test_bool_option_emitted_only_when_truthy(self) -> None:
+    def test_bool_option_only_when_user_supplies_true(self) -> None:
+        # Bool defaults never reach argv unless the caller explicitly sets
+        # them true. False user values are also skipped (argparse presence
+        # flags don't have a "false" argv form).
         entrypoint = EntryPoint(
             command="tool",
             arguments=(
@@ -110,10 +126,14 @@ class TestRenderBatchCommand:
                 Argument(name="--quiet", data_type="bool", default=True),
             ),
         )
-        cmd = RunService._render_batch_command(entrypoint, {})
-        # --quiet default=True → emitted; --verbose default=False → omitted
-        assert "--quiet" in cmd[2]
-        assert "--verbose" not in cmd[2]
+        # No user values → NOTHING emitted, even though --quiet has default=True
+        assert RunService._render_batch_command(entrypoint, {})[2] == "tool"
+        # Only --verbose supplied True → emitted
+        cmd = RunService._render_batch_command(entrypoint, {"--verbose": True})
+        assert cmd[2] == "tool --verbose"
+        # User explicitly sets --quiet False → still skipped (presence flag)
+        cmd = RunService._render_batch_command(entrypoint, {"--quiet": False})
+        assert cmd[2] == "tool"
 
     def test_shell_metacharacters_quoted(self) -> None:
         # Injection defense: user-supplied values must be shell-quoted so a

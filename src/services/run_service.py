@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
+import shlex
 import uuid
 from dataclasses import dataclass
 from functools import partial
@@ -159,11 +161,18 @@ class RunService:
     ) -> list[str]:
         """Render the Run's entrypoint into a K8s container command list.
 
-        EntryPoint.to_cli() produces a shell-quoted string (positional args
-        first, then options; bool args become presence flags; every value is
-        shlex.quote'd). We wrap it in `sh -c` so the container gets a shell
-        that respects that quoting and any operators (>, |) the annotator
-        embedded in EntryPoint.command.
+        Builds the argv from ``entrypoint.command`` + user-supplied argument
+        values, wrapped in ``sh -c`` so the container gets a shell that
+        respects our quoting and any operators the annotator embedded in
+        ``EntryPoint.command``.
+
+        We deliberately do NOT use ``EntryPoint.to_cli()``: to_cli emits any
+        argument that has a non-None ``default``, which breaks scripts that
+        use ``argparse``-style gating like ``if args.variable or no_args``
+        (see TD-009). Instead we mirror argparse's own semantics — an option
+        appears in argv only when the caller explicitly supplied a value.
+        Positional args still fall back to ``arg.default`` (they can't be
+        omitted, and validate_run_arguments already rejects missing values).
 
         If ``cwd_var`` is set, prefix the command with ``cd "$<cwd_var>" &&``
         so the entrypoint runs from the model-files mount (relative paths
@@ -174,7 +183,41 @@ class RunService:
                 "Run has no entrypoint — Discovery must call prepare_run with an "
                 "entrypoint_index before the exec platform can launch"
             )
-        rendered = entrypoint.to_cli(values=parameters or {})
+        parameters = parameters or {}
+
+        # Strip <placeholder> tokens from the base command (positional args
+        # fill them). Mirrors EntryPoint.to_cli's own regex.
+        base = re.sub(r"\s*<[^>]*>", "", entrypoint.command).strip()
+        parts = [base]
+
+        positional_args = sorted(
+            (a for a in entrypoint.arguments if a.position),
+            key=lambda a: a.position or 0,
+        )
+        option_args = [a for a in entrypoint.arguments if not a.position]
+
+        # Positionals: use user value if supplied, otherwise arg.default.
+        # validate_run_arguments guarantees a non-None value at prepare_run.
+        for arg in positional_args:
+            val = parameters.get(arg.name, arg.default)
+            if val is not None:
+                parts.append(shlex.quote(str(val)))
+
+        # Options: emit only when the caller explicitly supplied a value.
+        # Skipping "default only" options is the whole point of this method
+        # diverging from to_cli — argparse fills defaults itself, and baking
+        # them into argv breaks scripts that gate on len(sys.argv).
+        for arg in option_args:
+            if arg.name not in parameters:
+                continue
+            val = parameters[arg.name]
+            if arg.data_type == "bool":
+                if val:  # presence flag: emit token only when truthy
+                    parts.append(arg.name)
+            elif val is not None:  # valued option: token + value
+                parts.extend([arg.name, shlex.quote(str(val))])
+
+        rendered = " ".join(parts)
         if cwd_var:
             rendered = f'cd "${cwd_var}" && {rendered}'
         return ["sh", "-c", rendered]
