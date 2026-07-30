@@ -72,7 +72,8 @@ class AnnotationService:
             except Exception:
                 logger.warning(
                     f"Could not delete previous annotation job for resource {request.resource_id} "
-                    "— may already be gone",
+                    "— may already be gone, or may be orphaned in appstore/K8s "
+                    "requiring manual cleanup; proceeding with relaunch anyway",
                     exc_info=True,
                 )
 
@@ -173,6 +174,7 @@ class AnnotationService:
         except Exception:
             logger.warning(
                 f"Failed to delete annotation job for resource {resource_id} "
-                "after terminal transition",
+                "after terminal transition — job may be orphaned in appstore/"
+                "K8s and require manual cleanup",
                 exc_info=True,
             )
