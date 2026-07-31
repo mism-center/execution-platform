@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from mism_registry import InMemoryRegistry, ResourceRegistrationStatus, register_dataset
+from mism_registry.types import Argument, Compute, Container, EntryPoint
 
 from core.settings import Settings, get_settings
 from dependencies import get_dal, get_run_service
@@ -88,12 +89,25 @@ def approve_resource(dal: DALService, resource_id: str) -> None:
 
 
 def create_test_run(dal: DALService, registry: InMemoryRegistry | None = None) -> str:
-    """Helper: register a model + input dataset + create a Run, return run_id."""
+    """Helper: register a model + input dataset + create a Run, return run_id.
+
+    Populates a Container recipe and one EntryPoint so the model satisfies
+    the exec platform's launch contract (image_name + entrypoint_index=0).
+    """
     model = dal.register_model(
         name="test-model",
         location_uri="irods:///mism/models/spike-predictor",
-        execution_ref="docker.io/org/model:v1",
-        metadata={"resource_requirements": {"cpus": "2", "memory": "4Gi"}},
+        containers=[Container(kind="docker", image_name="docker.io/org/model:v1")],
+        entry_points=[
+            EntryPoint(
+                command="run.sh",
+                purpose="run the model end-to-end",
+                arguments=(
+                    Argument(name="--input", data_type="path", user_can_override=True),
+                ),
+            ),
+        ],
+        compute=Compute(cpu_cores=2, memory_gb=4.0),
     )
     approve_resource(dal, model.id)
     reg = registry or dal._in_memory
@@ -106,5 +120,6 @@ def create_test_run(dal: DALService, registry: InMemoryRegistry | None = None) -
         model_id=model.id,
         input_resource_ids=[input_ds.id],
         triggered_by="test",
+        entrypoint_index=0,
     )
     return run.id

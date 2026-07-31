@@ -17,12 +17,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
+import shlex
 import uuid
 from dataclasses import dataclass
 from functools import partial
 
 from mism_registry import Resource, ResourceType, RunStatus
+from mism_registry.types import Compute, EntryPoint
 
 from core.settings import Settings
 from schemas.runs import OutputResource, RunResponse
@@ -120,11 +123,123 @@ class RunService:
         return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
     # ------------------------------------------------------------------
+    # Run-schema helpers (entrypoint / container / compute → launch args)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _require_image(run) -> str:
+        """Pull the container image off the Run snapshot; hard-error if missing."""
+        if run.container is None or not run.container.image_name:
+            raise ValueError(
+                f"Run {run.id} has no container.image_name — model must ship a "
+                "Container recipe with image_name set for the exec platform to launch it"
+            )
+        return run.container.image_name
+
+    @staticmethod
+    def _resolve_compute(compute: Compute | None) -> tuple[str, str]:
+        """Map a model's Compute to the (cpus, memory) strings the appstore wants.
+
+        Falls back to DEFAULT_RESOURCE_REQUIREMENTS for missing fields.
+        memory_gb is emitted as a Ki-style suffix (e.g. 2.0 → "2.0Gi").
+        Compute is not snapshotted onto the Run today (see TECH_DEBT TD-005),
+        so callers pass model.compute at execution time.
+        """
+        default_cpus = DEFAULT_RESOURCE_REQUIREMENTS["cpus"]
+        default_memory = DEFAULT_RESOURCE_REQUIREMENTS["memory"]
+        if compute is None:
+            return default_cpus, default_memory
+        cpus = str(compute.cpu_cores) if compute.cpu_cores is not None else default_cpus
+        memory = f"{compute.memory_gb}Gi" if compute.memory_gb is not None else default_memory
+        return cpus, memory
+
+    @staticmethod
+    def _render_batch_command(
+        entrypoint: EntryPoint | None,
+        parameters: dict,
+        cwd_var: str | None = None,
+    ) -> list[str]:
+        """Render the Run's entrypoint into a K8s container command list.
+
+        Builds the argv from ``entrypoint.command`` + user-supplied argument
+        values, wrapped in ``sh -c`` so the container gets a shell that
+        respects our quoting and any operators the annotator embedded in
+        ``EntryPoint.command``.
+
+        We deliberately do NOT use ``EntryPoint.to_cli()``: to_cli emits any
+        argument that has a non-None ``default``, which breaks scripts that
+        use ``argparse``-style gating like ``if args.variable or no_args``
+        (see TD-009). Instead we mirror argparse's own semantics — an option
+        appears in argv only when the caller explicitly supplied a value.
+        Positional args still fall back to ``arg.default`` (they can't be
+        omitted, and validate_run_arguments already rejects missing values).
+
+        If ``cwd_var`` is set, prefix the command with ``cd "$<cwd_var>" &&``
+        so the entrypoint runs from the model-files mount (relative paths
+        like ``python chemotaxis/foo.py`` resolve as they would locally).
+        """
+        if entrypoint is None:
+            raise ValueError(
+                "Run has no entrypoint — Discovery must call prepare_run with an "
+                "entrypoint_index before the exec platform can launch"
+            )
+        parameters = parameters or {}
+
+        # Strip <placeholder> tokens from the base command (positional args
+        # fill them). Mirrors EntryPoint.to_cli's own regex.
+        base = re.sub(r"\s*<[^>]*>", "", entrypoint.command).strip()
+        parts = [base]
+
+        positional_args = sorted(
+            (a for a in entrypoint.arguments if a.position),
+            key=lambda a: a.position or 0,
+        )
+        option_args = [a for a in entrypoint.arguments if not a.position]
+
+        # Positionals: use user value if supplied, otherwise arg.default.
+        # validate_run_arguments guarantees a non-None value at prepare_run.
+        for arg in positional_args:
+            val = parameters.get(arg.name, arg.default)
+            if val is not None:
+                parts.append(shlex.quote(str(val)))
+
+        # Options: emit only when the caller explicitly supplied a value.
+        # Skipping "default only" options is the whole point of this method
+        # diverging from to_cli — argparse fills defaults itself, and baking
+        # them into argv breaks scripts that gate on len(sys.argv).
+        for arg in option_args:
+            if arg.name not in parameters:
+                continue
+            val = parameters[arg.name]
+            if arg.data_type == "bool":
+                # Coerce string-form booleans before evaluating truthiness.
+                # Python's `bool("false")` is True (non-empty string), which
+                # is a classic argparse gotcha. Match common CLI conventions:
+                # "true"/"1"/"yes"/"on" (case-insensitive) → True; anything
+                # else stringy → False. Native Python True/False untouched.
+                if isinstance(val, str):
+                    val = val.strip().lower() in ("true", "1", "yes", "on")
+                if val:  # presence flag: emit token only when truthy
+                    parts.append(arg.name)
+            elif val is not None:  # valued option: token + value
+                parts.extend([arg.name, shlex.quote(str(val))])
+
+        rendered = " ".join(parts)
+        if cwd_var:
+            rendered = f'cd "${cwd_var}" && {rendered}'
+        return ["sh", "-c", rendered]
+
+    # ------------------------------------------------------------------
     # Batch execution (via appstore /api/v1/jobs/)
     # ------------------------------------------------------------------
 
     async def create_run(self, run_id: str) -> RunResult:
-        """Execute a pre-created Run as a headless batch Job."""
+        """Execute a pre-created Run as a headless batch Job.
+
+        Image and command come from the Run snapshot (container.image_name,
+        entrypoint) that prepare_run stamped on. Compute still reads from the
+        model since Run doesn't carry it yet (TECH_DEBT TD-005).
+        """
         run = await self._in_executor(self._dal.get_run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found in DAL")
@@ -132,27 +247,30 @@ class RunService:
         model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
-        if not model.execution_ref:
-            raise ValueError(
-                f"Model {run.model_id} has no execution_ref (container image)"
-            )
+
+        image = self._require_image(run)
+        cpus, memory = self._resolve_compute(model.compute)
+
+        # Only mount /app + cd into it if the model actually has files on iRODS.
+        # Models registered without a location_uri (unit fixtures, pre-import
+        # rows) fall back to the image's baked contents.
+        has_model_files = bool(model.location_uri)
+        cwd_var = "MODEL_PATH" if has_model_files else None
+        command = self._render_batch_command(run.entrypoint, run.parameters, cwd_var=cwd_var)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
         )
-
-        resource_reqs = model.metadata.get(
-            "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
-        )
-        cpus = resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"])
-        memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
 
         output_resource_id, output_uri = self._generate_output_resource()
 
         sid = uuid.uuid4().hex
         pvc = self._settings.irods_pvc_name
 
-        pvc_mounts = self._build_pvc_mounts(input_paths, output_uri, pvc)
+        pvc_mounts = self._build_pvc_mounts(
+            input_paths, output_uri, pvc,
+            model_location_uri=model.location_uri if has_model_files else None,
+        )
 
         env = {
             "MODEL_ID": model.id,
@@ -160,13 +278,15 @@ class RunService:
             "INPUT_PATH": "/input",
             "OUTPUT_PATH": "/output",
         }
-        command = model.metadata.get("command")
+        if has_model_files:
+            env["MODEL_PATH"] = "/app"
+            env["PYTHONPATH"] = "/app"
 
         try:
             result = await self._appstore.launch_job(
                 name=f"mism-{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
                 identifier=sid,
-                image=model.execution_ref,
+                image=image,
                 cpus=cpus,
                 memory=memory,
                 env=env,
@@ -197,7 +317,13 @@ class RunService:
     # ------------------------------------------------------------------
 
     async def create_interactive(self, run_id: str) -> InteractiveResult:
-        """Launch an interactive session for a Run via the appstore."""
+        """Launch an interactive session for a Run via the appstore.
+
+        Image comes from the Run snapshot (container.image_name); compute
+        reads from model.compute. Interactive sessions run the image's default
+        entrypoint (typically a Jupyter server), so run.entrypoint is not
+        consulted here.
+        """
         jupyter_token = secrets.token_urlsafe(32)
 
         run = await self._in_executor(self._dal.get_run, run_id)
@@ -207,27 +333,23 @@ class RunService:
         model = await self._in_executor(self._dal.get_resource, run.model_id)
         if model is None:
             raise ValueError(f"Model {run.model_id} not found in DAL")
-        if not model.execution_ref:
-            raise ValueError(
-                f"Model {run.model_id} has no execution_ref (container image)"
-            )
+
+        image = self._require_image(run)
+        cpus_str, memory = self._resolve_compute(model.compute)
+        cpus = float(cpus_str)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
         )
 
-        resource_reqs = model.metadata.get(
-            "resource_requirements", DEFAULT_RESOURCE_REQUIREMENTS
-        )
-        cpus = float(resource_reqs.get("cpus", DEFAULT_RESOURCE_REQUIREMENTS["cpus"]))
-        memory = resource_reqs.get("memory", DEFAULT_RESOURCE_REQUIREMENTS["memory"])
-
         output_resource_id, output_uri = self._generate_output_resource()
 
         pvc = self._settings.irods_pvc_name
+        has_model_files = bool(model.location_uri)
         pvc_mounts = self._build_pvc_mounts(
             input_paths, output_uri, pvc,
             input_prefix="/data/input", output_mount="/data/output",
+            model_location_uri=model.location_uri if has_model_files else None,
         )
 
         env = {
@@ -236,9 +358,12 @@ class RunService:
             "JUPYTER_TOKEN": jupyter_token,
             "OUTPUT_PATH": "/data/output",
         }
+        if has_model_files:
+            env["MODEL_PATH"] = "/app"
+            env["PYTHONPATH"] = "/app"
 
         session = await self._appstore.launch(
-            image=model.execution_ref,
+            image=image,
             name=f"{model.name[:12]}-{run_id[:8]}".lower().replace(" ", "-"),
             cpus=cpus,
             memory=memory,
@@ -410,8 +535,30 @@ class RunService:
         pvc: str,
         input_prefix: str = "/input",
         output_mount: str = "/output",
+        model_location_uri: str | None = None,
+        model_mount: str = "/app",
+        overlay_output_at_model_out: bool = True,
     ) -> list[dict]:
-        """Build PVC mount dicts for the appstore API."""
+        """Build PVC mount dicts for the appstore API.
+
+        Model files (whatever landed on iRODS via github-import or direct
+        upload) mount at ``model_mount`` (default ``/app``) writable, so
+        scripts that emit artifacts next to their source (matching local
+        ``docker run -v $repo:/app`` semantics) keep working. Runs polluting
+        the model dir is a known trade-off — the "correct" fix routes writes
+        to ``$OUTPUT_PATH``, but forcing that on every model breaks parity
+        with how developers run these locally.
+
+        When ``overlay_output_at_model_out`` is true (default) and a model
+        mount is added, the SAME output sub_path is also mounted at
+        ``<model_mount>/out``. Scripts that write to relative ``out/…``
+        (a common Python convention, and what the annotator emits under
+        ``default_output_location``) land in the output resource instead of
+        polluting the model dir. Not a full fix for TD-006 — writes to any
+        other path inside ``/app`` still leak — but catches the common
+        ``out/`` case. Hardcoding the ``out`` name is TD-007 territory;
+        the per-entrypoint hint should drive this once the schema catches up.
+        """
         mounts = []
         for i, (_rid, uri) in enumerate(input_paths):
             mount_path = f"{input_prefix}/{i}" if len(input_paths) > 1 else input_prefix
@@ -421,12 +568,27 @@ class RunService:
                 "sub_path": uri.strip("/"),
                 "read_only": True,
             })
+        output_sub_path = output_uri.strip("/")
         mounts.append({
             "pvc": pvc,
             "mount_path": output_mount,
-            "sub_path": output_uri.strip("/"),
+            "sub_path": output_sub_path,
             "read_only": False,
         })
+        if model_location_uri:
+            mounts.append({
+                "pvc": pvc,
+                "mount_path": model_mount,
+                "sub_path": model_location_uri.strip("/"),
+                "read_only": False,
+            })
+            if overlay_output_at_model_out:
+                mounts.append({
+                    "pvc": pvc,
+                    "mount_path": f"{model_mount}/out",
+                    "sub_path": output_sub_path,
+                    "read_only": False,
+                })
         return mounts
 
     def _resolve_output_resources(self, resource_ids: list[str]) -> list[OutputResource]:

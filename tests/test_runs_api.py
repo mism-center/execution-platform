@@ -29,20 +29,19 @@ class TestCreateRun:
         resp = client.post("/api/v1/runs", json={})
         assert resp.status_code == 422
 
-    def test_create_run_model_no_execution_ref(
+    def test_create_run_model_no_container(
         self, client: TestClient, dal: DALService
     ) -> None:
-        """Model without execution_ref should fail with 400."""
+        """Model registered without a Container recipe should fail with 400."""
         model = dal.register_model(
             name="no-image-model",
             location_uri="irods:///mism/models/no-image",
-            execution_ref="",
         )
         approve_resource(dal, model.id)
         run = dal.create_run(model_id=model.id)
         resp = client.post("/api/v1/runs", json={"run_id": run.id})
         assert resp.status_code == 400
-        assert "execution_ref" in resp.json()["error"]["detail"]
+        assert "container.image_name" in resp.json()["error"]["detail"]
 
 
 class TestGetRun:
