@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -10,7 +12,7 @@ from fastapi import APIRouter, Depends, Response
 from fastapi.responses import FileResponse
 
 from core.errors import NotFoundError, OrchestrationError, ValidationError
-from core.settings import get_settings
+from core.settings import Settings, get_settings
 from dependencies import get_run_service
 from schemas.runs import CreateRunRequest, FileInfo, RunListResponse, RunResponse
 from services.run_service import RunService
@@ -18,6 +20,23 @@ from services.run_service import RunService
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _PLACEHOLDER_NAMES: frozenset[str] = frozenset({".gitignore", ".gitkeep", ".keep"})
+
+
+async def _exists_with_retry(check: Callable[[], bool], settings: Settings) -> bool:
+    """Bounded retry absorbing the iRODS PVC cross-pod visibility lag.
+
+    The run's execution pod and this API pod mount the same PVC from
+    different pods, so a file/directory can briefly be invisible through
+    this pod's mount right after the run is marked succeeded. Mirrors the
+    same fix applied in model-discovery's
+    ``RegistryService._metadata_package_dir``.
+    """
+    for attempt in range(1, settings.run_files_retry_max_attempts + 1):
+        if check():
+            return True
+        if attempt < settings.run_files_retry_max_attempts:
+            await asyncio.sleep(settings.run_files_retry_backoff_seconds * attempt)
+    return False
 
 
 @router.post("", response_model=RunResponse, status_code=201)
@@ -81,7 +100,7 @@ async def list_run_files(
     output_uri = run.output_resources[0].location_uri
     output_dir = Path(settings.irods_mount_path) / output_uri.strip("/")
 
-    if not output_dir.is_dir():
+    if not await _exists_with_retry(output_dir.is_dir, settings):
         return []
 
     files = []
@@ -125,7 +144,7 @@ async def download_run_file(
     if not file_path.resolve().is_relative_to(output_dir.resolve()):
         raise ValidationError(detail="Invalid filename")
 
-    if not file_path.is_file():
+    if not await _exists_with_retry(file_path.is_file, settings):
         raise NotFoundError(detail=f"File {filename} not found")
 
     return FileResponse(

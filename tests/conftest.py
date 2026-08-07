@@ -12,6 +12,7 @@ from mism_registry.types import Argument, Compute, Container, EntryPoint
 from core.settings import Settings, get_settings
 from dependencies import get_dal, get_run_service
 from main import create_app
+from services.annotation_service import AnnotationService
 from services.appstore_client import AppstoreClient, InteractiveSession, JobResult, JobStatus
 from services.dal_service import DALService
 from services.run_service import RunService
@@ -53,6 +54,13 @@ def mock_appstore() -> AppstoreClient:
 @pytest.fixture
 def run_service(dal: DALService, mock_appstore: AppstoreClient, settings: Settings) -> RunService:
     return RunService(dal=dal, appstore=mock_appstore, settings=settings)
+
+
+@pytest.fixture
+def annotation_service(
+    dal: DALService, mock_appstore: AppstoreClient, settings: Settings
+) -> AnnotationService:
+    return AnnotationService(dal=dal, appstore=mock_appstore, settings=settings)
 
 
 @pytest.fixture

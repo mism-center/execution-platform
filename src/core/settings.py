@@ -32,6 +32,21 @@ class Settings(BaseSettings):
     appstore_password: str = "admin"
     ambassador_url: str = "https://mism-apps.apps.renci.org"
 
+    # appstore has been observed returning a transient 500 when deleting a
+    # Job immediately after it reports a terminal status. Retry a bounded
+    # number of times before giving up on cleanup.
+    appstore_delete_retry_max_attempts: int = 3
+    appstore_delete_retry_backoff_seconds: float = 0.5
+
+    # The run's execution pod and this API pod mount the same iRODS PVC from
+    # different pods, so there's a brief window after a run is marked
+    # succeeded where its output files aren't yet visible through this
+    # pod's mount. Bounded retry absorbs that propagation lag before
+    # declaring the output directory/file not found (mirrors the fix in
+    # model-discovery's RegistryService._metadata_package_dir).
+    run_files_retry_max_attempts: int = 3
+    run_files_retry_backoff_seconds: float = 0.5
+
     # --- LLM (annotation agent) ---
     llm_api_key: str = ""
     llm_api_key_env_name: str = "AZURE_OPENAI_API_KEY"

@@ -6,6 +6,7 @@ batch execution (Jobs via /jobs/).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +53,8 @@ class AppstoreClient:
     def __init__(self, settings: Settings) -> None:
         self._base_url = settings.appstore_url.rstrip("/")
         self._auth = (settings.appstore_username, settings.appstore_password)
+        self._delete_retry_max_attempts = settings.appstore_delete_retry_max_attempts
+        self._delete_retry_backoff_seconds = settings.appstore_delete_retry_backoff_seconds
 
     # ------------------------------------------------------------------
     # Interactive sessions (/api/v1/containers/)
@@ -183,15 +186,45 @@ class AppstoreClient:
         )
 
     async def delete_job(self, sid: str) -> None:
-        """Delete a batch Job."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.delete(
-                f"{self._base_url}/api/v1/jobs/{sid}/",
-                auth=self._auth,
-                timeout=10.0,
-            )
-        if resp.status_code == 404:
-            logger.warning(f"Job {sid} not found in appstore")
-            return
-        resp.raise_for_status()
-        logger.info(f"Batch job deleted: sid={sid}")
+        """Delete a batch Job.
+
+        appstore has been observed returning a transient 500 when a Job is
+        deleted immediately after it reports a terminal status (plausibly a
+        race with the Job's own K8s teardown). Retry a bounded number of
+        times before giving up; on final failure, include the response body
+        in the raised error so the real appstore-side cause is visible in
+        logs instead of just httpx's generic "Server error" message.
+        """
+        last_resp: httpx.Response | None = None
+        for attempt in range(1, self._delete_retry_max_attempts + 1):
+            async with httpx.AsyncClient() as client:
+                resp = await client.delete(
+                    f"{self._base_url}/api/v1/jobs/{sid}/",
+                    auth=self._auth,
+                    timeout=10.0,
+                )
+            if resp.status_code == 404:
+                logger.warning(f"Job {sid} not found in appstore")
+                return
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                logger.info(f"Batch job deleted: sid={sid}")
+                return
+
+            last_resp = resp
+            if attempt < self._delete_retry_max_attempts:
+                logger.warning(
+                    f"Delete job {sid} failed (attempt {attempt}/"
+                    f"{self._delete_retry_max_attempts}): {resp.status_code} "
+                    f"body={resp.text[:500]!r} — retrying"
+                )
+                await asyncio.sleep(self._delete_retry_backoff_seconds * attempt)
+
+        assert last_resp is not None
+        raise httpx.HTTPStatusError(
+            f"Server error '{last_resp.status_code}' deleting job {sid} after "
+            f"{self._delete_retry_max_attempts} attempts; "
+            f"response body: {last_resp.text[:500]!r}",
+            request=last_resp.request,
+            response=last_resp,
+        )
