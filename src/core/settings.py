@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     # appstore has been observed returning a transient 500 when deleting a
     # Job immediately after it reports a terminal status. Retry a bounded
     # number of times before giving up on cleanup.
-    appstore_delete_retry_max_attempts: int = 3
-    appstore_delete_retry_backoff_seconds: float = 0.5
+    appstore_delete_retry_max_attempts: int = 4
+    appstore_delete_retry_backoff_seconds: float = 2.0
 
     # The run's execution pod and this API pod mount the same iRODS PVC from
     # different pods, so there's a brief window after a run is marked
