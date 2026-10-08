@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from mism_registry import InMemoryRegistry, ResourceRegistrationStatus, register_dataset
+from mism_registry import (
+    ImageReviewStatus,
+    InMemoryRegistry,
+    ResourceRegistrationStatus,
+    register_dataset,
+)
 from mism_registry.types import Argument, Compute, Container, EntryPoint
 
 from core.settings import Settings, get_settings
@@ -79,21 +84,42 @@ def client(
 
 
 def approve_resource(dal: DALService, resource_id: str) -> None:
-    """Walk a resource through the registration state machine to APPROVED.
+    """Walk a resource through both review workflows to a runnable state.
 
-    Handles both the legacy default (already APPROVED) and the new workflow
-    default (DRAFT), so tests pass against either version of mism_registry.
+    Registration: DRAFT → ANNOTATING → PENDING_REVIEW → APPROVED (skipping any
+    already-passed stages).
+
+    Image review (MISM-291): if the resource ships a container recipe,
+    prepare_run's validate_image_approved_if_shipped gate blocks Run creation
+    until image_review_status == IMAGE_APPROVED. Walk it via the state machine
+    (submit_container_image → set_image_review_status) rather than mutating
+    the field directly, so the transitions match production.
     """
     resource = dal.get_resource(resource_id)
-    if resource is None or resource.registration_status == ResourceRegistrationStatus.APPROVED:
+    if resource is None:
         return
-    status = resource.registration_status
-    if status == ResourceRegistrationStatus.DRAFT:
-        dal.set_resource_registration_status(resource_id, ResourceRegistrationStatus.ANNOTATING)
-        status = ResourceRegistrationStatus.ANNOTATING
-    if status == ResourceRegistrationStatus.ANNOTATING:
-        dal.set_resource_registration_status(resource_id, ResourceRegistrationStatus.PENDING_REVIEW)
-    dal.set_resource_registration_status(resource_id, ResourceRegistrationStatus.APPROVED)
+    if resource.registration_status != ResourceRegistrationStatus.APPROVED:
+        status = resource.registration_status
+        if status == ResourceRegistrationStatus.DRAFT:
+            dal.set_resource_registration_status(
+                resource_id, ResourceRegistrationStatus.ANNOTATING
+            )
+            status = ResourceRegistrationStatus.ANNOTATING
+        if status == ResourceRegistrationStatus.ANNOTATING:
+            dal.set_resource_registration_status(
+                resource_id, ResourceRegistrationStatus.PENDING_REVIEW
+            )
+        dal.set_resource_registration_status(resource_id, ResourceRegistrationStatus.APPROVED)
+        resource = dal.get_resource(resource_id)
+
+    if resource.containers and resource.image_review_status != ImageReviewStatus.IMAGE_APPROVED:
+        # NOT_APPLICABLE → PENDING_IMAGE_CHECK (re-submits the recipe the model already has)
+        if resource.image_review_status == ImageReviewStatus.NOT_APPLICABLE:
+            dal.submit_container_image(resource_id, resource.containers[0])
+        # PENDING_IMAGE_CHECK (or IMAGE_REJECTED) → IMAGE_APPROVED
+        dal.set_image_review_status(
+            resource_id, ImageReviewStatus.IMAGE_APPROVED, reviewed_by="test"
+        )
 
 
 def create_test_run(dal: DALService, registry: InMemoryRegistry | None = None) -> str:
