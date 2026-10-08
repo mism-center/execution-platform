@@ -9,7 +9,10 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.2",
     "httpx>=0.27",
-    "mism-registry[postgres] @ git+https://github.com/mism-center/metadata-schema.git@develop",
+    # Pinned, not @develop: the ORM mapping must match the target DB's migration
+    # head. 8166f83 = last commit before MISM-291 (migration 007). Bump this
+    # deliberately, together with the DB migration.
+    "mism-registry[postgres] @ git+https://github.com/mism-center/metadata-schema.git@8166f83d994662ef0efcc089c98f235b1a054ea0",
 ]
 
 [tool.hatch.metadata]
