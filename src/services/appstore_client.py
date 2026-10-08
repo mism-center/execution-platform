@@ -132,8 +132,18 @@ class AppstoreClient:
         command: list[str] | None = None,
         pvc_mounts: list[dict[str, Any]] | None = None,
         username: str = "mism",
+        service_account: str | None = None,
+        env_from: list[dict[str, Any]] | None = None,
+        secret_mounts: list[dict[str, Any]] | None = None,
+        ttl_seconds_after_finished: int | None = None,
+        security_context: dict[str, Any] | None = None,
     ) -> JobResult:
-        """Launch a batch K8s Job."""
+        """Launch a batch K8s Job.
+
+        The optional pod-shaping fields are sent only when set, so model-run
+        and annotation payloads are unchanged. ``service_account`` must be in
+        appstore's JOB_ALLOWED_SERVICE_ACCOUNTS or appstore returns 400.
+        """
         payload: dict[str, Any] = {
             "name": name,
             "identifier": identifier,
@@ -146,6 +156,16 @@ class AppstoreClient:
         }
         if command:
             payload["command"] = command
+        if service_account:
+            payload["service_account"] = service_account
+        if env_from:
+            payload["env_from"] = env_from
+        if secret_mounts:
+            payload["secret_mounts"] = secret_mounts
+        if ttl_seconds_after_finished is not None:
+            payload["ttl_seconds_after_finished"] = ttl_seconds_after_finished
+        if security_context:
+            payload["security_context"] = security_context
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(

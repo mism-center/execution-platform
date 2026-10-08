@@ -7,6 +7,7 @@ from functools import lru_cache
 from core.settings import Settings, get_settings
 from services.annotation_service import AnnotationService
 from services.appstore_client import AppstoreClient
+from services.build_service import BuildService
 from services.dal_service import DALService, create_registry
 from services.run_service import RunService
 
@@ -42,6 +43,16 @@ def get_run_service() -> RunService:
 def get_annotation_service() -> AnnotationService:
     settings = get_settings()
     return AnnotationService(
+        dal=get_dal(),
+        appstore=_create_appstore(),
+        settings=settings,
+    )
+
+
+@lru_cache
+def get_build_service() -> BuildService:
+    settings = get_settings()
+    return BuildService(
         dal=get_dal(),
         appstore=_create_appstore(),
         settings=settings,

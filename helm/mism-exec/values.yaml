@@ -73,5 +73,20 @@ llm:
   secretKey: api_key
   apiKeyEnvName: "LLM_API_KEY"
 
+# --- envbuild (envagent image builder, POST /api/v1/builds) ---
+# Names of objects from envagent's deploy/envbuild.yaml + its two Secrets.
+# They must exist in the namespace appstore creates Jobs in, and appstore must
+# allowlist the ServiceAccount (JOB_ALLOWED_SERVICE_ACCOUNTS=envbuild).
+envbuild:
+  agentImage: mismplatform/pi-envagent:k8s-test
+  serviceAccount: envbuild
+  workPvc: envbuild-work
+  llmSecret: envbuild-llm
+  tuningConfigMap: envbuild-tuning
+  registrySecret: envbuild-registry-auth
+  ttlSeconds: 86400
+  cpus: "1"
+  memory: 2Gi
+
 securityContext:
   runAsUser: 995

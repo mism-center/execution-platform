@@ -28,6 +28,7 @@ from mism_registry import Resource, ResourceType, RunStatus
 from mism_registry.types import Compute, EntryPoint
 
 from core.settings import Settings
+from core.storage import pvc_subpath
 from schemas.runs import OutputResource, RunResponse
 from services.appstore_client import AppstoreClient
 from services.dal_service import DEFAULT_RESOURCE_REQUIREMENTS, DALService
@@ -559,16 +560,17 @@ class RunService:
         ``out/`` case. Hardcoding the ``out`` name is TD-007 territory;
         the per-entrypoint hint should drive this once the schema catches up.
         """
+        irods_mount = self._settings.irods_mount_path
         mounts = []
         for i, (_rid, uri) in enumerate(input_paths):
             mount_path = f"{input_prefix}/{i}" if len(input_paths) > 1 else input_prefix
             mounts.append({
                 "pvc": pvc,
                 "mount_path": mount_path,
-                "sub_path": uri.strip("/"),
+                "sub_path": pvc_subpath(uri, irods_mount),
                 "read_only": True,
             })
-        output_sub_path = output_uri.strip("/")
+        output_sub_path = pvc_subpath(output_uri, irods_mount)
         mounts.append({
             "pvc": pvc,
             "mount_path": output_mount,
@@ -579,7 +581,7 @@ class RunService:
             mounts.append({
                 "pvc": pvc,
                 "mount_path": model_mount,
-                "sub_path": model_location_uri.strip("/"),
+                "sub_path": pvc_subpath(model_location_uri, irods_mount),
                 "read_only": False,
             })
             if overlay_output_at_model_out:

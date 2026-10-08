@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from mism_registry import (
     ExecutionType,
+    ImageReviewStatus,
     InMemoryRegistry,
     Resource,
     ResourceRegistrationStatus,
@@ -30,8 +31,10 @@ from mism_registry import (
     find_runs,
     prepare_run,
     register_model,
+    set_image_review_status,
     set_registration_status,
     start_run,
+    submit_container_image,
 )
 from mism_registry.errors import ResourceNotFoundError, RunNotFoundError
 from mism_registry.protocol import Registry
@@ -217,6 +220,33 @@ class DALService:
             resource = reg.get_resource(resource_id)
             resource.metadata = {**resource.metadata, **patch}
             return reg.update_resource(resource)
+
+    def submit_container_image(self, resource_id: str, container: Container) -> Resource:
+        """Attach a built container recipe and move image_review_status
+        NOT_APPLICABLE → PENDING_IMAGE_CHECK. Requires metadata review already APPROVED."""
+        with self._session_scope() as reg:
+            resource = submit_container_image(reg, resource_id=resource_id, container=container)
+            logger.info(f"Resource {resource_id}: container submitted → pending_image_check")
+            return resource
+
+    def set_image_review_status(
+        self,
+        resource_id: str,
+        target: ImageReviewStatus,
+        reviewed_by: str = "",
+        reason: str = "",
+    ) -> Resource:
+        """Advance image_review_status. Caller owns authorization."""
+        with self._session_scope() as reg:
+            resource = set_image_review_status(
+                reg,
+                resource_id=resource_id,
+                target=target,
+                reviewed_by=reviewed_by,
+                reason=reason,
+            )
+            logger.info(f"Resource {resource_id} → image_review_status={target.value}")
+            return resource
 
     def create_run(
         self,
