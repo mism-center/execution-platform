@@ -109,8 +109,10 @@ class TestLaunch:
 
         mounts = {m["mount_path"]: m for m in kw["pvc_mounts"]}
         assert mounts["/models"] == {
-            "pvc": "irods-pvc", "mount_path": "/models", "sub_path": "", "read_only": True,
+            "pvc": "irods-pvc", "mount_path": "/models", "read_only": True,
         }
+        # appstore's PvcMountSerializer rejects an explicit blank sub_path.
+        assert all(m.get("sub_path", "x") != "" for m in kw["pvc_mounts"])
         assert mounts["/work"]["pvc"] == "envbuild-work"
         assert mounts["/work"]["read_only"] is False
 

@@ -132,17 +132,17 @@ class BuildService:
                 cpus=self._settings.envbuild_cpus,
                 memory=self._settings.envbuild_memory,
                 env=env,
+                # Whole-claim mounts omit sub_path: appstore defaults it to ""
+                # but rejects an explicit blank value (DRF allow_blank=False).
                 pvc_mounts=[
                     {
                         "pvc": self._settings.envbuild_work_pvc,
                         "mount_path": WORK_MOUNT,
-                        "sub_path": "",
                         "read_only": False,
                     },
                     {
                         "pvc": self._settings.irods_pvc_name,
                         "mount_path": MODELS_MOUNT,
-                        "sub_path": "",
                         "read_only": True,
                     },
                 ],
