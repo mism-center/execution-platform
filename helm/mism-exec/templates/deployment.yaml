@@ -61,6 +61,24 @@ spec:
                   key: {{ .Values.llm.secretKey }}
             - name: LLM_API_KEY_ENV_NAME
               value: {{ .Values.llm.apiKeyEnvName | quote }}
+            - name: ENVBUILD_AGENT_IMAGE
+              value: {{ .Values.envbuild.agentImage | quote }}
+            - name: ENVBUILD_SERVICE_ACCOUNT
+              value: {{ .Values.envbuild.serviceAccount | quote }}
+            - name: ENVBUILD_WORK_PVC
+              value: {{ .Values.envbuild.workPvc | quote }}
+            - name: ENVBUILD_LLM_SECRET
+              value: {{ .Values.envbuild.llmSecret | quote }}
+            - name: ENVBUILD_TUNING_CONFIGMAP
+              value: {{ .Values.envbuild.tuningConfigMap | quote }}
+            - name: ENVBUILD_REGISTRY_SECRET
+              value: {{ .Values.envbuild.registrySecret | quote }}
+            - name: ENVBUILD_TTL_SECONDS
+              value: {{ .Values.envbuild.ttlSeconds | quote }}
+            - name: ENVBUILD_CPUS
+              value: {{ .Values.envbuild.cpus | quote }}
+            - name: ENVBUILD_MEMORY
+              value: {{ .Values.envbuild.memory | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- if .Values.storage.mountIrodsPvc }}

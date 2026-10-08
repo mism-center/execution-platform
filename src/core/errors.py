@@ -25,6 +25,11 @@ class ValidationError(PlatformError):
         super().__init__(code="validation_error", detail=detail, status_code=400)
 
 
+class ConflictError(PlatformError):
+    def __init__(self, detail: str) -> None:
+        super().__init__(code="conflict", detail=detail, status_code=409)
+
+
 class OrchestrationError(PlatformError):
     def __init__(self, detail: str) -> None:
         super().__init__(code="orchestration_error", detail=detail, status_code=502)

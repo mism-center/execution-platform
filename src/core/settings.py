@@ -51,6 +51,21 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_key_env_name: str = "AZURE_OPENAI_API_KEY"
 
+    # --- envbuild (envagent image builder) ---
+    # Names of the cluster objects from envagent's deploy/envbuild.yaml plus
+    # its two Secrets; all must live in the namespace appstore creates Jobs in.
+    # The agent spawns its Kaniko/verify pods in its own pod's namespace.
+    # :k8s-test, not :develop — :develop predates envagent's in-cluster rewrite.
+    envbuild_agent_image: str = "mismplatform/pi-envagent:k8s-test"
+    envbuild_service_account: str = "envbuild"
+    envbuild_work_pvc: str = "envbuild-work"
+    envbuild_llm_secret: str = "envbuild-llm"
+    envbuild_tuning_configmap: str = "envbuild-tuning"
+    envbuild_registry_secret: str = "envbuild-registry-auth"
+    envbuild_ttl_seconds: int = 86400
+    envbuild_cpus: str = "1"
+    envbuild_memory: str = "2Gi"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

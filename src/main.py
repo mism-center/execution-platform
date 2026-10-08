@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.v1 import annotations, runs
+from api.v1 import annotations, builds, runs
 from core.errors import register_error_handlers
 from core.logging import configure_logging
 from core.settings import get_settings
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
 
     app.include_router(runs.router, prefix="/api/v1")
     app.include_router(annotations.router, prefix="/api/v1")
+    app.include_router(builds.router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, str]:
