@@ -92,6 +92,9 @@ envbuild:
   mountWorkPvc: true
   workMountPath: /envbuild-work
   verdictGraceSeconds: 120
+  # Discovery's internal build callback; empty → outcomes are only logged.
+  # The network must allow mism-exec → discovery-gateway.
+  callbackUrl: http://discovery-gateway:8000/api/internal/builds
 
 securityContext:
   runAsUser: 995

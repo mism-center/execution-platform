@@ -461,22 +461,47 @@ def _write_records(
     run_id: str = RUN_ID,
     status: str = "verified",
     job_id: str = "job-2026-10-12-abcd",
+    with_state: bool = True,
+    annotation_patch: bool = False,
 ) -> None:
-    """Lay out envbuild-work the way envagent leaves it after a verdict."""
+    """Lay out envbuild-work the way envagent leaves it after a verdict:
+    two attempts, the second one producing the verdict's (best) image."""
     records = work / "records"
-    (records / "jobs" / job_id).mkdir(parents=True, exist_ok=True)
-    for name in ("state.json", "Dockerfile.a1", "lockfile.a1.txt"):
-        (records / "jobs" / job_id / name).write_text("x")
+    job_dir = records / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    for n in (1, 2):
+        (job_dir / f"Dockerfile.a{n}").write_text(f"FROM python:3.11-slim # a{n}\n")
+        (job_dir / f"lockfile.a{n}.txt").write_text(f"numpy==1.26.4 # a{n}\n")
+    if with_state:
+        (job_dir / "state.json").write_text(json.dumps({"best": {"spec": {
+            "install_mode": "mounted",
+            "env_vars": {"MPLBACKEND": "Agg"},
+            "entrypoint": ["python", "declared.py"],
+            "mount": {"code_path": "/model", "workdir": "/model",
+                      "input_path": "/inputs", "output_path": "/outputs"},
+        }}}))
+    if annotation_patch:
+        (job_dir / "annotation-patch.yaml").write_text("schema: envbuild-annotation-patch/1\n")
     verdict = {
         "model_id": f"mism:model/{model_id}", "job_id": job_id, "status": status,
-        "image_ref": "docker.io/mismplatform/envbuild@sha256:abc",
-        "image_digest": "sha256:abc", "reason": "ok", "run": {"run_id": run_id},
+        "image_ref": "docker.io/mismplatform/envbuild@sha256:bbb",
+        "image_digest": "sha256:bbb", "reason": "ok", "run": {"run_id": run_id},
+        "ladder_reached": "L3", "failure_class": None, "routes_to": "retry",
+        "lockfile_sha256": "sha256:lock", "entrypoint_used": "python chemo/run.py --steps 5",
     }
-    attempt = {"model_id": f"mism:model/{model_id}", "job_id": job_id, "attempt": 1}
+    attempts = [
+        {"model_id": f"mism:model/{model_id}", "job_id": job_id, "attempt": 1,
+         "ladder_reached": "L0", "failure_class": "ABI_MISMATCH", "image_digest": "sha256:aaa",
+         "action_taken": {"type": "PIN_PKG", "arg": "numpy<2", "why": "..."}, "duration_s": 60.0},
+        {"model_id": f"mism:model/{model_id}", "job_id": job_id, "attempt": 2,
+         "ladder_reached": "L3", "failure_class": None, "image_digest": "sha256:bbb",
+         "action_taken": None, "duration_s": 90.5},
+    ]
     with (records / "verdicts.jsonl").open("a") as f:
         f.write(json.dumps(verdict) + "\n")
     with (records / "attempts.jsonl").open("a") as f:
-        f.write(json.dumps(attempt) + "\n")
+        for row in attempts:
+            f.write(json.dumps(row) + "\n")
 
 
 class TestPoller:
@@ -506,14 +531,15 @@ class TestPoller:
         [result] = reporter.results
         assert result.resource_id == building
         assert result.run_id == RUN_ID
-        assert result.verdict_status == "verified"
-        assert result.image_ref == "docker.io/mismplatform/envbuild@sha256:abc"
-        assert [a["job_id"] for a in result.attempts] == ["job-2026-10-12-abcd"]
-        assert result.files == [
-            "records/jobs/job-2026-10-12-abcd/Dockerfile.a1",
-            "records/jobs/job-2026-10-12-abcd/lockfile.a1.txt",
-            "records/jobs/job-2026-10-12-abcd/state.json",
-        ]
+        assert result.outcome == "verified"
+        assert result.image_ref == "docker.io/mismplatform/envbuild@sha256:bbb"
+        assert [a["attempt"] for a in result.attempts] == [1, 2]
+        # The best attempt is the one whose image the verdict names (a2).
+        assert result.dockerfile == "FROM python:3.11-slim # a2\n"
+        assert result.lockfile == "numpy==1.26.4 # a2\n"
+        assert result.spec["mount"]["workdir"] == "/model"
+        assert result.annotation_patch is None
+        assert "records/jobs/job-2026-10-12-abcd/state.json" in result.files
         # ExecAPI doesn't make the terminal transition — the callback owns it.
         assert _env_status(dal, building) == EnvBuildStatus.BUILDING
 
@@ -565,6 +591,7 @@ class TestPoller:
         await build_service.poll_building_resources()
         [result] = reporter.results
         assert result.verdict is None
+        assert result.outcome == "no_verdict"
         assert "without a verdict" in result.reason
 
     async def test_failed_agent_reported_without_waiting(
@@ -592,6 +619,7 @@ class TestPoller:
         await build_service.poll_building_resources()
         [result] = reporter.results
         assert result.job_status == "missing"
+        assert result.outcome == "job_missing"
         assert "disappeared" in result.reason
 
     async def test_only_building_models_polled(
@@ -617,3 +645,64 @@ class TestPoller:
         mock_appstore.job_status = AsyncMock(side_effect=Exception("appstore down"))
         await build_service.poll_building_resources()  # must not raise
         assert reporter.results == []
+
+    async def test_annotation_patch_and_missing_state_tolerated(
+        self,
+        build_service: BuildService,
+        mock_appstore: AppstoreClient,
+        reporter: RecordingReporter,
+        building: str,
+        tmp_path: Path,
+    ) -> None:
+        _write_records(
+            tmp_path / "envbuild-work", building, with_state=False, annotation_patch=True
+        )
+        mock_appstore.job_status = AsyncMock(return_value=_job(building, "succeeded"))
+        await build_service.poll_building_resources()
+        [result] = reporter.results
+        assert result.spec is None
+        assert result.annotation_patch.startswith("schema: envbuild-annotation-patch/1")
+
+    async def test_no_second_report_when_ttl_removes_the_job(
+        self,
+        build_service: BuildService,
+        mock_appstore: AppstoreClient,
+        reporter: RecordingReporter,
+        building: str,
+        tmp_path: Path,
+    ) -> None:
+        _write_records(tmp_path / "envbuild-work", building)
+        mock_appstore.job_status = AsyncMock(return_value=_job(building, "succeeded"))
+        await build_service.poll_building_resources()
+        # Model still BUILDING (callback not applied yet); the Job's TTL expires.
+        mock_appstore.job_status = AsyncMock(return_value=None)
+        await build_service.poll_building_resources()
+        assert [r.job_status for r in reporter.results] == ["succeeded"]
+
+    async def test_failed_delivery_is_retried_next_poll(
+        self,
+        build_service: BuildService,
+        mock_appstore: AppstoreClient,
+        reporter: RecordingReporter,
+        building: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _write_records(tmp_path / "envbuild-work", building)
+        mock_appstore.job_status = AsyncMock(return_value=_job(building, "succeeded"))
+        calls = {"n": 0}
+        original = reporter.report
+
+        async def flaky(result: BuildResult) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("discovery 503")
+            await original(result)
+
+        monkeypatch.setattr(reporter, "report", flaky)
+        await build_service.poll_building_resources()  # delivery fails, swallowed by poller
+        assert reporter.results == []
+        await build_service.poll_building_resources()  # retried
+        assert len(reporter.results) == 1
+        await build_service.poll_building_resources()  # then not again
+        assert calls["n"] == 2

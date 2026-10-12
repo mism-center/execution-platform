@@ -83,6 +83,10 @@ spec:
               value: {{ .Values.envbuild.workMountPath | quote }}
             - name: ENVBUILD_VERDICT_GRACE_SECONDS
               value: {{ .Values.envbuild.verdictGraceSeconds | quote }}
+            {{- with .Values.envbuild.callbackUrl }}
+            - name: ENVBUILD_CALLBACK_URL
+              value: {{ . | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- if or .Values.storage.mountIrodsPvc .Values.envbuild.mountWorkPvc }}

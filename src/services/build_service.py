@@ -10,8 +10,8 @@ Builds are keyed by the model's resource id (appstore identifier
 ``env_build_status`` (MISM-296) tracks it: discovery sets READY_FOR_BUILD,
 ``launch`` moves it to BUILDING once the Job exists, and the poller reports the
 outcome. ExecAPI does not set RUNNABLE/BUILD_FAILED itself — the outcome goes
-to a reporter (discovery's callback, once that API exists), which owns the
-terminal transition.
+to a reporter (discovery's internal build callback), which owns the terminal
+transition.
 """
 
 from __future__ import annotations
@@ -97,11 +97,12 @@ class BuildService:
         self._appstore = appstore
         self._settings = settings
         self._reporter = reporter or LoggingBuildReporter()
-        # Process-local: (resource_id, job_name) already handed to the reporter,
-        # so a model left BUILDING until the callback transitions it isn't
-        # re-reported every poll. A restart re-reports once — the callback must
-        # be idempotent.
-        self._reported: set[tuple[str, str]] = set()
+        # Process-local: resource_id -> name of the Job last handed to the
+        # reporter, so a model still BUILDING (callback not yet applied) isn't
+        # re-reported every poll — nor reported again as "missing" once the
+        # Job's TTL removes it. A restart re-reports once; the callback must be
+        # idempotent.
+        self._reported: dict[str, str] = {}
         # job_name -> monotonic time the poller first saw it finished without a
         # verdict on the PVC (absorbs RWX file-cache lag before giving up).
         self._verdict_wait_started: dict[str, float] = {}
@@ -329,6 +330,8 @@ class BuildService:
         status = await self._appstore.job_status(identifier)
 
         if status is None:
+            if resource_id in self._reported:
+                return  # its finished Job was reported; the TTL has since removed it
             # Deleted, or removed by the TTL before anyone recorded an outcome.
             await self._report(BuildResult(
                 resource_id=resource_id, run_id=None, job_name=identifier,
@@ -337,7 +340,7 @@ class BuildService:
             return
         if status.status in _ACTIVE_JOB_STATES:
             return
-        if (resource_id, status.name) in self._reported:
+        if self._reported.get(resource_id) == status.name:
             return
 
         run_id = run_id_from_job_name(status.name, resource_id)
@@ -353,30 +356,28 @@ class BuildService:
                 return
 
         self._verdict_wait_started.pop(status.name, None)
-        verdict, attempts, files = gathered or (None, [], [])
         await self._report(BuildResult(
             resource_id=resource_id,
             run_id=run_id,
             job_name=status.name,
             job_status=status.status,
             exit_code=status.exit_code,
-            verdict=verdict,
-            attempts=attempts,
-            files=files,
+            **(gathered or {}),
         ))
 
     async def _report(self, result: BuildResult) -> None:
-        key = (result.resource_id, result.job_name)
-        if key in self._reported:
+        if self._reported.get(result.resource_id) == result.job_name:
             return
+        # Raises on a retryable delivery failure: nothing is recorded, so the
+        # next poll tries again.
         await self._reporter.report(result)
-        self._reported.add(key)
+        self._reported[result.resource_id] = result.job_name
 
-    def _read_outputs(
-        self, resource_id: str, run_id: str
-    ) -> tuple[dict, list[dict], list[str]] | None:
-        """This build's verdict row, its attempt rows, and the per-job files the
-        agent left on envbuild-work. None if the verdict isn't there (yet)."""
+    def _read_outputs(self, resource_id: str, run_id: str) -> dict | None:
+        """This build's verdict row plus what the callback needs from the PVC:
+        attempt rows, the run contract from state.json, the best attempt's
+        Dockerfile/lockfile, and any annotation patch. None if the verdict
+        isn't there (yet)."""
         records = Path(self._settings.envbuild_work_mount_path) / RECORDS_DIR
         model_id = f"mism:model/{resource_id}"
         verdict = None
@@ -393,15 +394,58 @@ class BuildService:
             row for row in _read_jsonl(records / "attempts.jsonl")
             if row.get("job_id") == job_id
         ]
-        files: list[str] = []
         job_dir = records / "jobs" / job_id
-        if job_id and job_dir.is_dir():
-            # Paths relative to the envbuild-work PVC root.
-            files = sorted(
-                f"{RECORDS_DIR}/jobs/{job_id}/{p.relative_to(job_dir).as_posix()}"
-                for p in job_dir.rglob("*") if p.is_file()
-            )
-        return verdict, attempts, files
+        if not job_id or not job_dir.is_dir():
+            return {"verdict": verdict, "attempts": attempts}
+
+        # Paths relative to the envbuild-work PVC root.
+        files = sorted(
+            f"{RECORDS_DIR}/jobs/{job_id}/{p.relative_to(job_dir).as_posix()}"
+            for p in job_dir.rglob("*") if p.is_file()
+        )
+
+        state = _read_json(job_dir / "state.json") or {}
+        spec = (state.get("best") or {}).get("spec") or state.get("spec")
+
+        # The best attempt is the one that produced the verdict's image.
+        best_attempt = None
+        digest = verdict.get("image_digest")
+        if digest:
+            for row in attempts:
+                if row.get("image_digest") == digest:
+                    best_attempt = row.get("attempt")
+        dockerfile = lockfile = None
+        if best_attempt is not None:
+            dockerfile = _read_text(job_dir / f"Dockerfile.a{best_attempt}")
+            lockfile = _read_text(job_dir / f"lockfile.a{best_attempt}.txt")
+
+        return {
+            "verdict": verdict,
+            "attempts": attempts,
+            "files": files,
+            "spec": spec,
+            "dockerfile": dockerfile,
+            "lockfile": lockfile,
+            "annotation_patch": _read_text(job_dir / "annotation-patch.yaml"),
+        }
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def _read_json(path: Path) -> dict | None:
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _read_jsonl(path: Path) -> list[dict]:

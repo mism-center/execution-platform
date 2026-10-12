@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # How long a cleanly-exited build may go without its verdict appearing on
     # the RWX mount before it is reported verdict-less.
     envbuild_verdict_grace_seconds: int = 120
+    # Discovery's internal build callback (POST, payload in
+    # services.build_reporter.build_callback_payload). Unset → outcomes are
+    # only logged.
+    envbuild_callback_url: str | None = None
+    envbuild_callback_timeout_seconds: float = 30.0
 
     model_config = {
         "env_file": ".env",
