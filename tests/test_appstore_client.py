@@ -94,3 +94,51 @@ class TestDeleteJobRetry:
             await client.delete_job("fake-sid")
 
         assert calls["count"] == 1
+
+
+class TestLaunchJobPayload:
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch) -> dict:
+        captured: dict = {}
+
+        async def fake_post(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            captured["json"] = kwargs["json"]
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                201, json={"sid": "s", "name": "n", "status": "running"}, request=request
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        return captured
+
+    async def test_optional_pod_fields_omitted_by_default(
+        self, client: AppstoreClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture(monkeypatch)
+        await client.launch_job(name="mism-x", identifier="abc", image="img")
+        for key in (
+            "service_account", "env_from", "secret_mounts",
+            "ttl_seconds_after_finished", "security_context",
+        ):
+            assert key not in captured["json"]
+
+    async def test_optional_pod_fields_sent_when_set(
+        self, client: AppstoreClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture(monkeypatch)
+        await client.launch_job(
+            name="envbuild-x",
+            identifier="abc",
+            image="img",
+            service_account="envbuild",
+            env_from=[{"kind": "secret", "name": "envbuild-llm"}],
+            secret_mounts=[{"secret": "s", "mount_path": "/s", "items": {}}],
+            ttl_seconds_after_finished=0,
+            security_context={"allow_privilege_escalation": False},
+        )
+        body = captured["json"]
+        assert body["service_account"] == "envbuild"
+        assert body["env_from"] == [{"kind": "secret", "name": "envbuild-llm"}]
+        assert body["secret_mounts"][0]["secret"] == "s"
+        assert body["ttl_seconds_after_finished"] == 0
+        assert body["security_context"] == {"allow_privilege_escalation": False}

@@ -198,11 +198,15 @@ class TestBuildPvcMounts:
     """`_build_pvc_mounts` — model files mounted at /app when location_uri set."""
 
     def _svc(self):
-        # _build_pvc_mounts is an instance method that only reads self via
-        # unused attributes here; a bare RunService with mock deps is fine.
+        # _build_pvc_mounts only reads settings.irods_mount_path; real Settings
+        # for that, mock deps for the rest.
         from unittest.mock import MagicMock
 
-        return RunService(dal=MagicMock(), appstore=MagicMock(), settings=MagicMock())
+        from core.settings import Settings
+
+        return RunService(
+            dal=MagicMock(), appstore=MagicMock(), settings=Settings(database_url=None)
+        )
 
     def test_model_mount_appended_when_location_uri_present(self) -> None:
         mounts = self._svc()._build_pvc_mounts(
@@ -235,6 +239,17 @@ class TestBuildPvcMounts:
         )
         model_mount = next(m for m in mounts if m["mount_path"] == "/app")
         assert model_mount["sub_path"] == "leading/slash"
+
+    def test_irods_scheme_uris_become_claim_relative(self) -> None:
+        mounts = self._svc()._build_pvc_mounts(
+            input_paths=[("ds", "irods:///mism/datasets/cohort-a")],
+            output_uri="out/v1",
+            pvc="irods-pvc",
+            model_location_uri="irods:///mism/models/spike-predictor",
+        )
+        by_path = {m["mount_path"]: m for m in mounts}
+        assert by_path["/input"]["sub_path"] == "mism/datasets/cohort-a"
+        assert by_path["/app"]["sub_path"] == "mism/models/spike-predictor"
 
     def test_overlay_mounts_output_at_app_out(self) -> None:
         # /app/out and /output should share the same sub_path so scripts

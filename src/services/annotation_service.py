@@ -9,6 +9,7 @@ from functools import partial
 from mism_registry import ResourceRegistrationStatus
 
 from core.settings import Settings
+from core.storage import pvc_subpath
 from schemas.annotations import AnnotateRequest, AnnotateResponse
 from services.appstore_client import AppstoreClient
 from services.dal_service import DALService
@@ -80,7 +81,7 @@ class AnnotationService:
         pvc_mounts = [{
             "pvc": self._settings.irods_pvc_name,
             "mount_path": "/workspace",
-            "sub_path": resource.location_uri.strip("/"),
+            "sub_path": pvc_subpath(resource.location_uri, self._settings.irods_mount_path),
             "read_only": False,
         }]
 

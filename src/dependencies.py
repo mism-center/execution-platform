@@ -7,6 +7,8 @@ from functools import lru_cache
 from core.settings import Settings, get_settings
 from services.annotation_service import AnnotationService
 from services.appstore_client import AppstoreClient
+from services.build_reporter import BuildReporter, HttpBuildReporter, LoggingBuildReporter
+from services.build_service import BuildService
 from services.dal_service import DALService, create_registry
 from services.run_service import RunService
 
@@ -45,4 +47,23 @@ def get_annotation_service() -> AnnotationService:
         dal=get_dal(),
         appstore=_create_appstore(),
         settings=settings,
+    )
+
+
+def _create_build_reporter(settings: Settings) -> BuildReporter:
+    if settings.envbuild_callback_url:
+        return HttpBuildReporter(
+            settings.envbuild_callback_url, settings.envbuild_callback_timeout_seconds
+        )
+    return LoggingBuildReporter()
+
+
+@lru_cache
+def get_build_service() -> BuildService:
+    settings = get_settings()
+    return BuildService(
+        dal=get_dal(),
+        appstore=_create_appstore(),
+        settings=settings,
+        reporter=_create_build_reporter(settings),
     )
