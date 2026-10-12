@@ -38,12 +38,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tasks: list[asyncio.Task] = []
 
     if get_settings().database_url:
-        from dependencies import get_annotation_service, get_run_service
+        from dependencies import get_annotation_service, get_build_service, get_run_service
         tasks.append(asyncio.create_task(
             _poll_loop("batch run", get_run_service().poll_batch_runs)
         ))
         tasks.append(asyncio.create_task(
             _poll_loop("annotation", get_annotation_service().poll_annotating_resources)
+        ))
+        tasks.append(asyncio.create_task(
+            _poll_loop("envbuild", get_build_service().poll_building_resources)
         ))
 
     yield

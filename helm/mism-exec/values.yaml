@@ -87,6 +87,11 @@ envbuild:
   ttlSeconds: 86400
   cpus: "1"
   memory: 2Gi
+  # Mount envbuild-work read-only so the build poller can read the agent's
+  # verdict and per-job files. The PVC must exist in this namespace.
+  mountWorkPvc: true
+  workMountPath: /envbuild-work
+  verdictGraceSeconds: 120
 
 securityContext:
   runAsUser: 995

@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     envbuild_ttl_seconds: int = 86400
     envbuild_cpus: str = "1"
     envbuild_memory: str = "2Gi"
+    # Where this pod mounts the envbuild-work PVC (read-only) to read the
+    # agent's verdict and per-job files once a build Job finishes.
+    envbuild_work_mount_path: str = "/envbuild-work"
+    # How long a cleanly-exited build may go without its verdict appearing on
+    # the RWX mount before it is reported verdict-less.
+    envbuild_verdict_grace_seconds: int = 120
 
     model_config = {
         "env_file": ".env",

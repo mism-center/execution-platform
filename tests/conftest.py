@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from mism_registry import (
+    EnvBuildStatus,
     ImageReviewStatus,
     InMemoryRegistry,
     ResourceRegistrationStatus,
@@ -83,8 +84,8 @@ def client(
     return TestClient(app)
 
 
-def approve_resource(dal: DALService, resource_id: str) -> None:
-    """Walk a resource through both review workflows to a runnable state.
+def approve_resource(dal: DALService, resource_id: str, *, runnable: bool = True) -> None:
+    """Walk a resource through the review workflows to a runnable state.
 
     Registration: DRAFT → ANNOTATING → PENDING_REVIEW → APPROVED (skipping any
     already-passed stages).
@@ -94,6 +95,11 @@ def approve_resource(dal: DALService, resource_id: str) -> None:
     until image_review_status == IMAGE_APPROVED. Walk it via the state machine
     (submit_container_image → set_image_review_status) rather than mutating
     the field directly, so the transitions match production.
+
+    Env build (MISM-296): approval moves env_build_status NOT_READY →
+    READY_FOR_BUILD, and prepare_run requires RUNNABLE. ``runnable=True``
+    walks READY_FOR_BUILD → BUILDING → RUNNABLE; ``runnable=False`` leaves the
+    model READY_FOR_BUILD, which is what POST /builds expects.
     """
     resource = dal.get_resource(resource_id)
     if resource is None:
@@ -120,6 +126,12 @@ def approve_resource(dal: DALService, resource_id: str) -> None:
         dal.set_image_review_status(
             resource_id, ImageReviewStatus.IMAGE_APPROVED, reviewed_by="test"
         )
+
+    if runnable:
+        resource = dal.get_resource(resource_id)
+        if resource.env_build_status == EnvBuildStatus.READY_FOR_BUILD:
+            dal.set_env_build_status(resource_id, EnvBuildStatus.BUILDING)
+            dal.set_env_build_status(resource_id, EnvBuildStatus.RUNNABLE)
 
 
 def create_test_run(dal: DALService, registry: InMemoryRegistry | None = None) -> str:

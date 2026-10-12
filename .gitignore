@@ -24,3 +24,9 @@ claude_*.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment-specific overrides and local-only files — never commit
+helm/**/values-azure.yaml
+helm/appstore-values-azure.yaml
+*-dontpush*
+Azureresources.csv

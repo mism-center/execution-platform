@@ -1,30 +1,38 @@
 """Build service — fires the envagent image builder (envbuild) for a model.
 
-Phase 1 is fire-and-forget: ExecAPI asks appstore for one K8s Job shaped like
-envagent's ``deploy/agent-job.yaml``. Builds are keyed by the model's resource
-id (appstore identifier ``build-<resource_id>``), so there is at most one build
-Job per model. Nothing is persisted; status is read live from appstore. The
-agent itself creates the
-Kaniko and verification pods (as the ``envbuild`` ServiceAccount) and writes
-its verdict to the envbuild-work PVC.
+ExecAPI asks appstore for one K8s Job shaped like envagent's
+``deploy/agent-job.yaml``; the agent creates its own Kaniko and verification
+pods (as the ``envbuild`` ServiceAccount) and writes its verdict to the
+envbuild-work PVC.
+
+Builds are keyed by the model's resource id (appstore identifier
+``build-<resource_id>``), so there is at most one build Job per model. The DAL's
+``env_build_status`` (MISM-296) tracks it: discovery sets READY_FOR_BUILD,
+``launch`` moves it to BUILDING once the Job exists, and the poller reports the
+outcome. ExecAPI does not set RUNNABLE/BUILD_FAILED itself — the outcome goes
+to a reporter (discovery's callback, once that API exists), which owns the
+terminal transition.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import posixpath
 import re
+import time
 import uuid
 from functools import partial
 from pathlib import Path
 
-from mism_registry import ResourceRegistrationStatus, ResourceType
+from mism_registry import EnvBuildStatus, ResourceRegistrationStatus, ResourceType
 
 from core.settings import Settings
 from core.storage import pvc_subpath
 from schemas.builds import BuildRequest, BuildResponse, BuildStatusResponse
 from services.appstore_client import AppstoreClient
+from services.build_reporter import BuildReporter, BuildResult, LoggingBuildReporter
 from services.dal_service import DALService
 
 logger = logging.getLogger(__name__)
@@ -33,51 +41,86 @@ logger = logging.getLogger(__name__)
 MODELS_MOUNT = "/models"
 WORK_MOUNT = "/work"
 DOCKER_CONFIG_MOUNT = "/home/node/.docker"  # harness image runs as user `node`
+# envagent's record dir, relative to the envbuild-work PVC root. The agent sees
+# it at WORK_MOUNT/RECORDS_DIR; ExecAPI at settings.envbuild_work_mount_path/RECORDS_DIR.
+RECORDS_DIR = "records"
 
 # Prefix keeps the build's mism-guid label distinct from the annotation Job's,
 # which is the bare resource_id: appstore's job_status/delete_job select by
 # that label, and delete_job removes every match.
 BUILD_IDENTIFIER_PREFIX = "build-"
-JOB_NAME = "envbuild"  # appstore names the Job f"{name}-{identifier}"
+JOB_NAME_PREFIX = "envbuild"
 
-# Resource ids are uuids. The id ends up in the Job name ("envbuild-build-<id>",
-# a DNS label of at most 63 chars) and in appstore's label selector, so anything
-# outside lowercase alphanumerics/dashes, or longer than 48 chars, is refused.
-_RESOURCE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
+# The Job is named "envbuild-<run_id>-build-<resource_id>" (appstore builds
+# f"{name}-{identifier}"). Carrying run_id in the name is how the poller finds
+# this build's verdict row (run.run_id) — appstore's job status exposes nothing
+# else per launch. The name must be a DNS label (<= 63 chars), which caps the
+# resource id at 37 chars (a uuid is 36).
+RUN_ID_LEN = 10
+_RESOURCE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,35}[a-z0-9])?$")
+
+_ACTIVE_JOB_STATES = ("pending", "running")
 
 
 class BuildInProgressError(Exception):
-    """A build Job for this model is still pending or running."""
+    """A build for this model is already underway."""
 
 
 def build_identifier(resource_id: str) -> str:
     return f"{BUILD_IDENTIFIER_PREFIX}{resource_id}"
 
 
+def _job_name_prefix(run_id: str) -> str:
+    return f"{JOB_NAME_PREFIX}-{run_id}"
+
+
+def run_id_from_job_name(job_name: str, resource_id: str) -> str | None:
+    """Recover the run_id from ``envbuild-<run_id>-build-<resource_id>``."""
+    m = re.fullmatch(
+        rf"{JOB_NAME_PREFIX}-([0-9a-f]{{{RUN_ID_LEN}}})-{re.escape(build_identifier(resource_id))}",
+        job_name,
+    )
+    return m.group(1) if m else None
+
+
 class BuildService:
-    """Launches envbuild agent Jobs through appstore."""
+    """Launches envbuild agent Jobs through appstore and reports their outcome."""
 
     def __init__(
         self,
         dal: DALService,
         appstore: AppstoreClient,
         settings: Settings,
+        reporter: BuildReporter | None = None,
     ) -> None:
         self._dal = dal
         self._appstore = appstore
         self._settings = settings
+        self._reporter = reporter or LoggingBuildReporter()
+        # Process-local: (resource_id, job_name) already handed to the reporter,
+        # so a model left BUILDING until the callback transitions it isn't
+        # re-reported every poll. A restart re-reports once — the callback must
+        # be idempotent.
+        self._reported: set[tuple[str, str]] = set()
+        # job_name -> monotonic time the poller first saw it finished without a
+        # verdict on the PVC (absorbs RWX file-cache lag before giving up).
+        self._verdict_wait_started: dict[str, float] = {}
 
     @staticmethod
     async def _in_executor(fn, *args, **kwargs):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
+    # ------------------------------------------------------------------
+    # Launch
+    # ------------------------------------------------------------------
+
     async def launch(self, request: BuildRequest) -> BuildResponse:
-        """Validate the model and create the builder Job.
+        """Validate the model, create the builder Job, then mark it BUILDING.
 
         Raises LookupError (unknown resource), ValueError (not buildable),
-        BuildInProgressError (a build for this model is still active) or
-        RuntimeError (appstore refused/failed).
+        BuildInProgressError (a build for this model is already underway) or
+        RuntimeError (appstore or the DAL failed).
         """
         if not _RESOURCE_ID.match(request.resource_id):
             raise LookupError(f"Resource {request.resource_id} not found")
@@ -95,6 +138,15 @@ class BuildService:
                 f"Resource {request.resource_id} must be approved before building "
                 f"(status={resource.registration_status.value})"
             )
+        if resource.env_build_status == EnvBuildStatus.BUILDING:
+            raise BuildInProgressError(f"A build is already underway for {resource.id}")
+        # Discovery queues the model by setting READY_FOR_BUILD (approval does it
+        # automatically; retry/rebuild do it explicitly).
+        if resource.env_build_status != EnvBuildStatus.READY_FOR_BUILD:
+            raise ValueError(
+                f"Resource {request.resource_id} has env_build_status="
+                f"{resource.env_build_status.value}, expected ready_for_build"
+            )
 
         model_rel = pvc_subpath(resource.location_uri, self._settings.irods_mount_path)
         annotation_rel = _relative_subpath(request.annotation_subpath)
@@ -103,7 +155,7 @@ class BuildService:
         identifier = build_identifier(resource.id)
         await self._clear_previous_build(identifier)
 
-        run_id = uuid.uuid4().hex
+        run_id = uuid.uuid4().hex[:RUN_ID_LEN]
         model_repo = f"{MODELS_MOUNT}/{model_rel}"
         image = self._settings.envbuild_agent_image
 
@@ -111,13 +163,13 @@ class BuildService:
             "MODEL_ID": f"mism:model/{resource.id}",
             "MODEL_REPO": model_repo,
             "ANNOTATION": f"{model_repo}/{annotation_rel}",
-            "ENVBUILD_OUTPUTS": f"{WORK_MOUNT}/records",
+            "ENVBUILD_OUTPUTS": f"{WORK_MOUNT}/{RECORDS_DIR}",
             "ENVBUILD_WORK_PVC": self._settings.envbuild_work_pvc,
             "ENVBUILD_WORK_MOUNT": WORK_MOUNT,
             "ENVBUILD_MODELS_PVC": self._settings.irods_pvc_name,
             "ENVBUILD_MODELS_MOUNT": MODELS_MOUNT,
-            # Fresh per launch and stamped on every attempt/verdict row as
-            # run.run_id, so rebuilds of the same model stay distinguishable.
+            # Stamped on every attempt/verdict row as run.run_id; the poller
+            # matches on it (also carried in the Job name).
             "ENVBUILD_RUN_ID": run_id,
             "ENVBUILD_HARNESS_IMAGE": image,
         }
@@ -126,7 +178,7 @@ class BuildService:
 
         try:
             result = await self._appstore.launch_job(
-                name=JOB_NAME,
+                name=_job_name_prefix(run_id),
                 identifier=identifier,
                 image=image,
                 cpus=self._settings.envbuild_cpus,
@@ -173,6 +225,26 @@ class BuildService:
         except Exception as e:
             raise RuntimeError(f"Failed to launch envbuild job: {e}") from e
 
+        # Mark BUILDING only once the Job exists: there is no BUILDING ->
+        # READY_FOR_BUILD transition to undo a failed launch with.
+        try:
+            await self._in_executor(
+                self._dal.set_env_build_status, resource.id, EnvBuildStatus.BUILDING
+            )
+        except Exception as e:
+            # Don't leave an agent running that the DAL doesn't know about.
+            try:
+                await self._appstore.delete_job(identifier)
+            except Exception:
+                logger.warning(
+                    f"envbuild job {result.name} launched but could not be deleted after the "
+                    "BUILDING transition failed — it may be orphaned",
+                    exc_info=True,
+                )
+            raise RuntimeError(
+                f"envbuild job launched but marking {resource.id} BUILDING failed: {e}"
+            ) from e
+
         logger.info(
             f"envbuild launched: resource={resource.id} run_id={run_id} job={result.name}"
         )
@@ -205,14 +277,14 @@ class BuildService:
 
     async def _clear_previous_build(self, identifier: str) -> None:
         """One build Job per model: refuse while one is active, otherwise delete
-        a finished one so its name (kept for the TTL) doesn't block the relaunch."""
+        a finished one so it doesn't linger next to the new launch."""
         try:
             previous = await self._appstore.job_status(identifier)
         except Exception as e:
             raise RuntimeError(f"Failed to check for an existing envbuild job: {e}") from e
         if previous is None:
             return
-        if previous.status not in ("succeeded", "failed"):
+        if previous.status in _ACTIVE_JOB_STATES:
             raise BuildInProgressError(
                 f"A build is already {previous.status} for this model (job {previous.name})"
             )
@@ -233,6 +305,120 @@ class BuildService:
             raise ValueError(
                 f"Annotation not found: {model_rel}/{annotation_rel}/execution.yaml"
             )
+
+    # ------------------------------------------------------------------
+    # Poller
+    # ------------------------------------------------------------------
+
+    async def poll_building_resources(self) -> None:
+        """Report the outcome of every BUILDING model whose Job has finished."""
+        resources = await self._in_executor(
+            self._dal.list_resources_by_env_build_status, EnvBuildStatus.BUILDING
+        )
+        for resource in resources:
+            try:
+                await self._sync_build(resource.id)
+            except Exception:
+                logger.warning(
+                    f"Poller: failed to sync envbuild for resource {resource.id}",
+                    exc_info=True,
+                )
+
+    async def _sync_build(self, resource_id: str) -> None:
+        identifier = build_identifier(resource_id)
+        status = await self._appstore.job_status(identifier)
+
+        if status is None:
+            # Deleted, or removed by the TTL before anyone recorded an outcome.
+            await self._report(BuildResult(
+                resource_id=resource_id, run_id=None, job_name=identifier,
+                job_status="missing", exit_code=None,
+            ))
+            return
+        if status.status in _ACTIVE_JOB_STATES:
+            return
+        if (resource_id, status.name) in self._reported:
+            return
+
+        run_id = run_id_from_job_name(status.name, resource_id)
+        gathered = None
+        if run_id:
+            gathered = await self._in_executor(self._read_outputs, resource_id, run_id)
+
+        if gathered is None and status.status == "succeeded":
+            # A clean exit always writes a verdict; give the RWX mount time to
+            # surface it before reporting the build as verdict-less.
+            first = self._verdict_wait_started.setdefault(status.name, time.monotonic())
+            if time.monotonic() - first < self._settings.envbuild_verdict_grace_seconds:
+                return
+
+        self._verdict_wait_started.pop(status.name, None)
+        verdict, attempts, files = gathered or (None, [], [])
+        await self._report(BuildResult(
+            resource_id=resource_id,
+            run_id=run_id,
+            job_name=status.name,
+            job_status=status.status,
+            exit_code=status.exit_code,
+            verdict=verdict,
+            attempts=attempts,
+            files=files,
+        ))
+
+    async def _report(self, result: BuildResult) -> None:
+        key = (result.resource_id, result.job_name)
+        if key in self._reported:
+            return
+        await self._reporter.report(result)
+        self._reported.add(key)
+
+    def _read_outputs(
+        self, resource_id: str, run_id: str
+    ) -> tuple[dict, list[dict], list[str]] | None:
+        """This build's verdict row, its attempt rows, and the per-job files the
+        agent left on envbuild-work. None if the verdict isn't there (yet)."""
+        records = Path(self._settings.envbuild_work_mount_path) / RECORDS_DIR
+        model_id = f"mism:model/{resource_id}"
+        verdict = None
+        for row in reversed(_read_jsonl(records / "verdicts.jsonl")):
+            run = row.get("run") or {}
+            if row.get("model_id") == model_id and run.get("run_id") == run_id:
+                verdict = row
+                break
+        if verdict is None:
+            return None
+
+        job_id = verdict.get("job_id") or ""
+        attempts = [
+            row for row in _read_jsonl(records / "attempts.jsonl")
+            if row.get("job_id") == job_id
+        ]
+        files: list[str] = []
+        job_dir = records / "jobs" / job_id
+        if job_id and job_dir.is_dir():
+            # Paths relative to the envbuild-work PVC root.
+            files = sorted(
+                f"{RECORDS_DIR}/jobs/{job_id}/{p.relative_to(job_dir).as_posix()}"
+                for p in job_dir.rglob("*") if p.is_file()
+            )
+        return verdict, attempts, files
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    """Rows of a JSONL file; missing file or malformed lines are skipped."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    rows = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def _relative_subpath(subpath: str) -> str:

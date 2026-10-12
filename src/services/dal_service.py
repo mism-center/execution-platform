@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from mism_registry import (
+    EnvBuildStatus,
     ExecutionType,
     ImageReviewStatus,
     InMemoryRegistry,
@@ -31,6 +32,7 @@ from mism_registry import (
     find_runs,
     prepare_run,
     register_model,
+    set_env_build_status,
     set_image_review_status,
     set_registration_status,
     start_run,
@@ -206,6 +208,21 @@ class DALService:
     ) -> list[Resource]:
         with self._session_scope() as reg:
             return [r for r in find_resources(reg) if r.registration_status == status]
+
+    def list_resources_by_env_build_status(self, status: EnvBuildStatus) -> list[Resource]:
+        with self._session_scope() as reg:
+            return [r for r in find_resources(reg) if r.env_build_status == status]
+
+    def set_env_build_status(
+        self, resource_id: str, target: EnvBuildStatus, error: str = ""
+    ) -> Resource:
+        """Advance env_build_status (MISM-296). ``error`` is kept only for BUILD_FAILED."""
+        with self._session_scope() as reg:
+            resource = set_env_build_status(
+                reg, resource_id=resource_id, target=target, error=error
+            )
+            logger.info(f"Resource {resource_id} → env_build_status={target.value}")
+            return resource
 
     def set_resource_registration_status(
         self, resource_id: str, target: ResourceRegistrationStatus
