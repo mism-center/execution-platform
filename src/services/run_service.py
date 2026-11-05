@@ -28,11 +28,31 @@ from mism_registry import Resource, ResourceType, RunStatus
 from mism_registry.types import Compute, EntryPoint
 
 from core.settings import Settings
+from core.storage import pvc_subpath
 from schemas.runs import OutputResource, RunResponse
 from services.appstore_client import AppstoreClient
 from services.dal_service import DEFAULT_RESOURCE_REQUIREMENTS, DALService
 
 logger = logging.getLogger(__name__)
+
+# Batch runs mount the model read-only at the path envagent verified it with,
+# run in a private copy, and collect whatever the run wrote into the output
+# mount — the same mechanism as envagent's L3 ``writable_copy`` (ladder.py).
+MODEL_CODE_MOUNT = "/model"
+MODEL_WORK_COPY = "/scratch/model"
+OUTPUT_MOUNT = "/output"
+
+# $0 read-only code  $1 copy root  $2 output dir, then the command.
+_WORKING_COPY_SH = (
+    'set -e; mkdir -p "$1"; cp -a "$0"/. "$1"/; '
+    'm="$1.start"; : > "$m"; sleep 1; '
+    'cd "$1"; copy="$1"; out="$2"; shift 2; '
+    'set +e; "$@"; rc=$?; set -e; '
+    'cd "$copy" && find . -type f -newer "$m" ! -name "*.pyc" ! -path "*/__pycache__/*" '
+    '! -path "./.git/*" ! -path "*/.pytest_cache/*" '
+    '-exec sh -c \'mkdir -p "$0/$(dirname "$1")" && cp -p "$1" "$0/$1"\' "$out" {} \\; ; '
+    'exit $rc'
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -229,6 +249,16 @@ class RunService:
             rendered = f'cd "${cwd_var}" && {rendered}'
         return ["sh", "-c", rendered]
 
+    @staticmethod
+    def _wrap_in_working_copy(command: list[str]) -> list[str]:
+        """Run ``command`` in a writable copy of the read-only model mount and
+        collect every file it created or changed into the output mount."""
+        return [
+            "sh", "-c", _WORKING_COPY_SH,
+            MODEL_CODE_MOUNT, MODEL_WORK_COPY, OUTPUT_MOUNT,
+            *command,
+        ]
+
     # ------------------------------------------------------------------
     # Batch execution (via appstore /api/v1/jobs/)
     # ------------------------------------------------------------------
@@ -251,12 +281,12 @@ class RunService:
         image = self._require_image(run)
         cpus, memory = self._resolve_compute(model.compute)
 
-        # Only mount /app + cd into it if the model actually has files on iRODS.
         # Models registered without a location_uri (unit fixtures, pre-import
-        # rows) fall back to the image's baked contents.
+        # rows) run the image's baked contents directly.
         has_model_files = bool(model.location_uri)
-        cwd_var = "MODEL_PATH" if has_model_files else None
-        command = self._render_batch_command(run.entrypoint, run.parameters, cwd_var=cwd_var)
+        command = self._render_batch_command(run.entrypoint, run.parameters)
+        if has_model_files:
+            command = self._wrap_in_working_copy(command)
 
         input_paths = await self._in_executor(
             self._resolve_input_paths, run.input_resource_ids
@@ -269,18 +299,22 @@ class RunService:
 
         pvc_mounts = self._build_pvc_mounts(
             input_paths, output_uri, pvc,
+            output_mount=OUTPUT_MOUNT,
             model_location_uri=model.location_uri if has_model_files else None,
+            model_mount=MODEL_CODE_MOUNT,
+            model_read_only=True,
+            overlay_output_at_model_out=False,
         )
 
         env = {
             "MODEL_ID": model.id,
             "RUN_ID": run_id,
             "INPUT_PATH": "/input",
-            "OUTPUT_PATH": "/output",
+            "OUTPUT_PATH": OUTPUT_MOUNT,
         }
         if has_model_files:
-            env["MODEL_PATH"] = "/app"
-            env["PYTHONPATH"] = "/app"
+            # PYTHONPATH is left to the image (envagent bakes the verified one).
+            env["MODEL_PATH"] = MODEL_WORK_COPY
 
         try:
             result = await self._appstore.launch_job(
@@ -538,6 +572,7 @@ class RunService:
         model_location_uri: str | None = None,
         model_mount: str = "/app",
         overlay_output_at_model_out: bool = True,
+        model_read_only: bool = False,
     ) -> list[dict]:
         """Build PVC mount dicts for the appstore API.
 
@@ -559,16 +594,17 @@ class RunService:
         ``out/`` case. Hardcoding the ``out`` name is TD-007 territory;
         the per-entrypoint hint should drive this once the schema catches up.
         """
+        irods_mount = self._settings.irods_mount_path
         mounts = []
         for i, (_rid, uri) in enumerate(input_paths):
             mount_path = f"{input_prefix}/{i}" if len(input_paths) > 1 else input_prefix
             mounts.append({
                 "pvc": pvc,
                 "mount_path": mount_path,
-                "sub_path": uri.strip("/"),
+                "sub_path": pvc_subpath(uri, irods_mount),
                 "read_only": True,
             })
-        output_sub_path = output_uri.strip("/")
+        output_sub_path = pvc_subpath(output_uri, irods_mount)
         mounts.append({
             "pvc": pvc,
             "mount_path": output_mount,
@@ -579,8 +615,8 @@ class RunService:
             mounts.append({
                 "pvc": pvc,
                 "mount_path": model_mount,
-                "sub_path": model_location_uri.strip("/"),
-                "read_only": False,
+                "sub_path": pvc_subpath(model_location_uri, irods_mount),
+                "read_only": model_read_only,
             })
             if overlay_output_at_model_out:
                 mounts.append({

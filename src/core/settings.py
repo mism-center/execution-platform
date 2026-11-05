@@ -51,6 +51,32 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_key_env_name: str = "AZURE_OPENAI_API_KEY"
 
+    # --- envbuild (envagent image builder) ---
+    # Names of the cluster objects from envagent's deploy/envbuild.yaml plus
+    # its two Secrets; all must live in the namespace appstore creates Jobs in.
+    # The agent spawns its Kaniko/verify pods in its own pod's namespace.
+    # :k8s-test, not :develop — :develop predates envagent's in-cluster rewrite.
+    envbuild_agent_image: str = "mismplatform/pi-envagent:k8s-test"
+    envbuild_service_account: str = "envbuild"
+    envbuild_work_pvc: str = "envbuild-work"
+    envbuild_llm_secret: str = "envbuild-llm"
+    envbuild_tuning_configmap: str = "envbuild-tuning"
+    envbuild_registry_secret: str = "envbuild-registry-auth"
+    envbuild_ttl_seconds: int = 86400
+    envbuild_cpus: str = "1"
+    envbuild_memory: str = "2Gi"
+    # Where this pod mounts the envbuild-work PVC (read-only) to read the
+    # agent's verdict and per-job files once a build Job finishes.
+    envbuild_work_mount_path: str = "/envbuild-work"
+    # How long a cleanly-exited build may go without its verdict appearing on
+    # the RWX mount before it is reported verdict-less.
+    envbuild_verdict_grace_seconds: int = 120
+    # Discovery's internal build callback (POST, payload in
+    # services.build_reporter.build_callback_payload). Unset → outcomes are
+    # only logged.
+    envbuild_callback_url: str | None = None
+    envbuild_callback_timeout_seconds: float = 30.0
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

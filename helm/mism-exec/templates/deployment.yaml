@@ -61,13 +61,46 @@ spec:
                   key: {{ .Values.llm.secretKey }}
             - name: LLM_API_KEY_ENV_NAME
               value: {{ .Values.llm.apiKeyEnvName | quote }}
+            - name: ENVBUILD_AGENT_IMAGE
+              value: {{ .Values.envbuild.agentImage | quote }}
+            - name: ENVBUILD_SERVICE_ACCOUNT
+              value: {{ .Values.envbuild.serviceAccount | quote }}
+            - name: ENVBUILD_WORK_PVC
+              value: {{ .Values.envbuild.workPvc | quote }}
+            - name: ENVBUILD_LLM_SECRET
+              value: {{ .Values.envbuild.llmSecret | quote }}
+            - name: ENVBUILD_TUNING_CONFIGMAP
+              value: {{ .Values.envbuild.tuningConfigMap | quote }}
+            - name: ENVBUILD_REGISTRY_SECRET
+              value: {{ .Values.envbuild.registrySecret | quote }}
+            - name: ENVBUILD_TTL_SECONDS
+              value: {{ .Values.envbuild.ttlSeconds | quote }}
+            - name: ENVBUILD_CPUS
+              value: {{ .Values.envbuild.cpus | quote }}
+            - name: ENVBUILD_MEMORY
+              value: {{ .Values.envbuild.memory | quote }}
+            - name: ENVBUILD_WORK_MOUNT_PATH
+              value: {{ .Values.envbuild.workMountPath | quote }}
+            - name: ENVBUILD_VERDICT_GRACE_SECONDS
+              value: {{ .Values.envbuild.verdictGraceSeconds | quote }}
+            {{- with .Values.envbuild.callbackUrl }}
+            - name: ENVBUILD_CALLBACK_URL
+              value: {{ . | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.storage.mountIrodsPvc }}
+          {{- if or .Values.storage.mountIrodsPvc .Values.envbuild.mountWorkPvc }}
           volumeMounts:
+            {{- if .Values.storage.mountIrodsPvc }}
             - name: irods-data
               mountPath: {{ .Values.storage.irodsMountPath }}
               readOnly: {{ .Values.storage.readOnly }}
+            {{- end }}
+            {{- if .Values.envbuild.mountWorkPvc }}
+            - name: envbuild-work
+              mountPath: {{ .Values.envbuild.workMountPath }}
+              readOnly: true
+            {{- end }}
           {{- end }}
           livenessProbe:
             httpGet:
@@ -81,10 +114,18 @@ spec:
               port: {{ .Values.service.port }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
-      {{- if .Values.storage.mountIrodsPvc }}
+      {{- if or .Values.storage.mountIrodsPvc .Values.envbuild.mountWorkPvc }}
       volumes:
+        {{- if .Values.storage.mountIrodsPvc }}
         - name: irods-data
           persistentVolumeClaim:
             claimName: {{ .Values.storage.irodsPvcName }}
             readOnly: {{ .Values.storage.readOnly }}
+        {{- end }}
+        {{- if .Values.envbuild.mountWorkPvc }}
+        - name: envbuild-work
+          persistentVolumeClaim:
+            claimName: {{ .Values.envbuild.workPvc }}
+            readOnly: true
+        {{- end }}
       {{- end }}
