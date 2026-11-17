@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.2",
     "httpx>=0.27",
+    "certifi>=2026.10.23",
     # Pinned, not @develop: the ORM mapping must match the target DB's migration
     # head. 2cca711 = metadata-schema feature/MISM-296 (env_build_status,
     # migration 010) — move to the develop merge commit once MISM-296 merges.

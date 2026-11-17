@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(eq=False)
 class PlatformError(Exception):
     code: str
     detail: str
